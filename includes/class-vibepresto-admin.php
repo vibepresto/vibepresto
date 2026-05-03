@@ -55,6 +55,8 @@ class Admin
 
         $mode = sanitize_key($_POST['upload_mode'] ?? '');
         $display_name = sanitize_text_field(wp_unslash($_POST['display_name'] ?? ''));
+        $page_id = isset($_POST['page_id']) ? (int) $_POST['page_id'] : 0;
+        $assign_to_page = ! empty($_POST['assign_to_page']) && $page_id > 0;
 
         try {
             if ($mode === 'zip') {
@@ -71,14 +73,22 @@ class Admin
                 throw new RuntimeException(__('Choose a valid upload mode.', 'vibepresto'));
             }
         } catch (RuntimeException $exception) {
-            $this->redirect_with_notice('error', $exception->getMessage());
+            $this->redirect_with_notice('error', $exception->getMessage(), $page_id);
         }
 
         if (is_wp_error($bundle_id)) {
-            $this->redirect_with_notice('error', $bundle_id->get_error_message());
+            $this->redirect_with_notice('error', $bundle_id->get_error_message(), $page_id);
         }
 
-        $this->redirect_with_notice('success', __('Bundle uploaded successfully.', 'vibepresto'));
+        if ($assign_to_page && $this->bundles->find((int) $bundle_id)) {
+            $this->bundles->assign_to_page($page_id, (int) $bundle_id);
+        }
+
+        $message = $assign_to_page
+            ? __('Bundle uploaded and assigned to this page.', 'vibepresto')
+            : __('Bundle uploaded successfully.', 'vibepresto');
+
+        $this->redirect_with_notice('success', $message, $page_id);
     }
 
     public function handle_delete_bundle(): void
@@ -100,7 +110,8 @@ class Admin
             __('VibePresto Takeover', 'vibepresto'),
             [$this, 'render_page_meta_box'],
             'page',
-            'side'
+            'normal',
+            'high'
         );
     }
 
@@ -115,6 +126,8 @@ class Admin
 
         $selected_bundle_id = $this->bundles->get_assigned_bundle_id((int) $post->ID);
         $bundles = $this->bundles->all();
+        $active_bundle = $selected_bundle_id > 0 ? $this->bundles->find($selected_bundle_id) : null;
+        $notice = $this->read_notice();
 
         include VIBEPRESTO_PLUGIN_DIR . 'views/page-meta-box.php';
     }
@@ -152,13 +165,20 @@ class Admin
         check_admin_referer($nonce_action);
     }
 
-    private function redirect_with_notice(string $type, string $message): void
+    private function redirect_with_notice(string $type, string $message, int $page_id = 0): void
     {
-        $url = add_query_arg([
-            'page' => 'vibepresto',
+        $args = [
             'vibepresto_notice' => rawurlencode($message),
             'vibepresto_notice_type' => rawurlencode($type),
-        ], admin_url('admin.php'));
+        ];
+
+        if ($page_id > 0) {
+            $url = add_query_arg($args, get_edit_post_link($page_id, 'url'));
+        } else {
+            $url = add_query_arg([
+            'page' => 'vibepresto',
+            ] + $args, admin_url('admin.php'));
+        }
 
         wp_safe_redirect($url);
         exit;
