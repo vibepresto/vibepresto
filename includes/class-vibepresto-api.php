@@ -62,7 +62,25 @@ class API
 
         register_rest_route('vibepresto/v1', '/pages', [
             'methods' => 'GET',
-            'callback' => [$this, 'search_pages'],
+            'callback' => [$this, 'list_pages'],
+            'permission_callback' => '__return_true',
+        ]);
+
+        register_rest_route('vibepresto/v1', '/pages', [
+            'methods' => 'POST',
+            'callback' => [$this, 'create_page'],
+            'permission_callback' => '__return_true',
+        ]);
+
+        register_rest_route('vibepresto/v1', '/pages/(?P<id>\d+)/status', [
+            'methods' => 'POST',
+            'callback' => [$this, 'update_page_status'],
+            'permission_callback' => '__return_true',
+        ]);
+
+        register_rest_route('vibepresto/v1', '/pages/(?P<id>\d+)/homepage', [
+            'methods' => 'POST',
+            'callback' => [$this, 'set_page_as_homepage'],
             'permission_callback' => '__return_true',
         ]);
 
@@ -87,7 +105,7 @@ class API
         $machine_name = sanitize_text_field((string) ($request->get_param('machine_name') ?: ''));
         $scope = $request->get_param('scope');
         if (! is_array($scope)) {
-            $scope = ['bundles:write', 'pages:read', 'pages:assign'];
+            $scope = ['bundles:write', 'pages:read', 'pages:write', 'pages:assign', 'site:write'];
         }
 
         $device = $this->auth->create_device_authorization($client_name, $machine_name, $scope);
@@ -179,7 +197,7 @@ class API
         ]);
     }
 
-    public function search_pages(WP_REST_Request $request): WP_REST_Response
+    public function list_pages(WP_REST_Request $request): WP_REST_Response
     {
         $auth = $this->require_bearer_auth($request);
         if (is_wp_error($auth)) {
@@ -187,27 +205,149 @@ class API
         }
 
         $query = sanitize_text_field((string) $request->get_param('q'));
+        $status = sanitize_key((string) $request->get_param('status'));
+        $allowed_statuses = ['publish', 'draft', 'pending', 'private', 'future'];
+        $post_status = in_array($status, $allowed_statuses, true)
+            ? [$status]
+            : ['publish', 'draft', 'pending', 'private', 'future'];
         $pages = get_posts([
             'post_type' => 'page',
-            'post_status' => ['publish', 'draft', 'pending', 'private'],
-            'posts_per_page' => 20,
+            'post_status' => $post_status,
+            'posts_per_page' => -1,
             's' => $query,
             'orderby' => 'title',
             'order' => 'ASC',
         ]);
 
-        $items = array_map(static function (WP_Post $page): array {
+        $homepage_id = (int) get_option('page_on_front');
+        $items = array_map(static function (WP_Post $page) use ($homepage_id): array {
             return [
                 'id' => (int) $page->ID,
                 'title' => $page->post_title,
                 'slug' => $page->post_name,
                 'status' => $page->post_status,
                 'url' => get_permalink($page->ID),
+                'is_homepage' => $homepage_id > 0 && $homepage_id === (int) $page->ID,
             ];
         }, $pages);
 
         return $this->success([
             'items' => $items,
+            'total' => count($items),
+        ]);
+    }
+
+    public function create_page(WP_REST_Request $request): WP_REST_Response
+    {
+        $auth = $this->require_bearer_auth($request);
+        if (is_wp_error($auth)) {
+            return $this->from_error($auth);
+        }
+
+        if (! current_user_can('manage_options')) {
+            return $this->error('forbidden', __('Only administrators can create pages.', 'vibepresto'), 403);
+        }
+
+        $title = sanitize_text_field((string) $request->get_param('title'));
+        if ($title === '') {
+            return $this->error('invalid_request', __('A page title is required.', 'vibepresto'), 400);
+        }
+
+        $status = sanitize_key((string) ($request->get_param('status') ?: 'draft'));
+        $allowed_statuses = ['publish', 'draft', 'pending', 'private'];
+        if (! in_array($status, $allowed_statuses, true)) {
+            return $this->error('invalid_request', __('Choose a valid page status.', 'vibepresto'), 400);
+        }
+
+        $page_data = [
+            'post_type' => 'page',
+            'post_title' => $title,
+            'post_status' => $status,
+            'post_content' => wp_kses_post((string) $request->get_param('content')),
+        ];
+
+        $slug = sanitize_title((string) $request->get_param('slug'));
+        if ($slug !== '') {
+            $page_data['post_name'] = $slug;
+        }
+
+        $page_id = wp_insert_post($page_data, true);
+        if (is_wp_error($page_id)) {
+            return $this->from_error($page_id, 400);
+        }
+
+        $page = get_post((int) $page_id);
+        if (! $page instanceof WP_Post) {
+            return $this->error('server_error', __('The page was created but could not be loaded.', 'vibepresto'), 500);
+        }
+
+        return $this->success($this->page_payload($page), 201);
+    }
+
+    public function update_page_status(WP_REST_Request $request): WP_REST_Response
+    {
+        $auth = $this->require_bearer_auth($request);
+        if (is_wp_error($auth)) {
+            return $this->from_error($auth);
+        }
+
+        if (! current_user_can('manage_options')) {
+            return $this->error('forbidden', __('Only administrators can change page status.', 'vibepresto'), 403);
+        }
+
+        $page = $this->page_from_request($request);
+        if (is_wp_error($page)) {
+            return $this->from_error($page, 404);
+        }
+
+        $status = sanitize_key((string) $request->get_param('status'));
+        $allowed_statuses = ['publish', 'draft', 'pending', 'private'];
+        if (! in_array($status, $allowed_statuses, true)) {
+            return $this->error('invalid_request', __('Choose a valid page status.', 'vibepresto'), 400);
+        }
+
+        $updated = wp_update_post([
+            'ID' => (int) $page->ID,
+            'post_status' => $status,
+        ], true);
+
+        if (is_wp_error($updated)) {
+            return $this->from_error($updated, 400);
+        }
+
+        $fresh_page = get_post((int) $page->ID);
+        if (! $fresh_page instanceof WP_Post) {
+            return $this->error('server_error', __('The page status was updated but could not be reloaded.', 'vibepresto'), 500);
+        }
+
+        return $this->success($this->page_payload($fresh_page));
+    }
+
+    public function set_page_as_homepage(WP_REST_Request $request): WP_REST_Response
+    {
+        $auth = $this->require_bearer_auth($request);
+        if (is_wp_error($auth)) {
+            return $this->from_error($auth);
+        }
+
+        if (! current_user_can('manage_options')) {
+            return $this->error('forbidden', __('Only administrators can change the homepage.', 'vibepresto'), 403);
+        }
+
+        $page = $this->page_from_request($request);
+        if (is_wp_error($page)) {
+            return $this->from_error($page, 404);
+        }
+
+        update_option('show_on_front', 'page');
+        update_option('page_on_front', (int) $page->ID);
+
+        return $this->success([
+            'page_id' => (int) $page->ID,
+            'page_title' => $page->post_title,
+            'page_status' => $page->post_status,
+            'page_url' => get_permalink($page->ID),
+            'is_homepage' => true,
         ]);
     }
 
@@ -310,6 +450,35 @@ class API
         wp_set_current_user($auth['user']->ID);
 
         return $auth;
+    }
+
+    private function page_from_request(WP_REST_Request $request)
+    {
+        $page_id = absint((string) $request->get_param('id'));
+        if ($page_id < 1) {
+            return new WP_Error('not_found', __('The requested page could not be found.', 'vibepresto'));
+        }
+
+        $page = get_post($page_id);
+        if (! $page instanceof WP_Post || $page->post_type !== 'page') {
+            return new WP_Error('not_found', __('The requested page could not be found.', 'vibepresto'));
+        }
+
+        return $page;
+    }
+
+    private function page_payload(WP_Post $page): array
+    {
+        $page_id = (int) $page->ID;
+
+        return [
+            'page_id' => $page_id,
+            'page_title' => $page->post_title,
+            'page_slug' => $page->post_name,
+            'page_status' => $page->post_status,
+            'page_url' => get_permalink($page_id),
+            'is_homepage' => (int) get_option('page_on_front') === $page_id,
+        ];
     }
 
     private function file_param(string $key): array
