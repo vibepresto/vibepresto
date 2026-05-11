@@ -8,16 +8,17 @@ Stable tag: 0.1.0
 License: MIT
 License URI: https://opensource.org/license/mit
 
-Create and manage WordPress pages, then upload static HTML, CSS, and JavaScript bundles and assign them as full-page takeovers.
+Create and manage WordPress pages, then upload versioned static HTML, CSS, and JavaScript bundles and assign them as full-page takeovers.
 
 == Description ==
 
-VibePresto lets administrators create and manage pages, upload a static site bundle, store it inside WordPress, and assign it to a page. It also exposes a CLI-friendly authorization and upload API for the published `vibepresto` CLI.
+VibePresto lets administrators create and manage pages, upload a static site bundle, store version history inside WordPress, and assign it to a page. It also exposes a CLI-friendly authorization and upload API for the published `vibepresto` CLI.
 
 Features:
 
 * Upload a prepared ZIP bundle
 * Upload separate HTML, CSS, JS, and asset files
+* Keep bundle version history and roll back to earlier versions
 * Create WordPress pages from the CLI
 * List pages and change page status from the CLI
 * Set a page as the default homepage

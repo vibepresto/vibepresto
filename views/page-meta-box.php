@@ -13,8 +13,10 @@ if (! defined('ABSPATH')) {
     <?php endif; ?>
 
     <?php if ($active_bundle) : ?>
-        <p><strong><?php echo esc_html($active_bundle['title']); ?></strong></p>
+        <p><strong><?php echo esc_html($active_bundle['version_label']); ?></strong></p>
         <p><?php echo esc_html__('Visitors are currently seeing the uploaded takeover bundle instead of the normal WordPress page template.', 'vibepresto'); ?></p>
+        <p><strong><?php echo esc_html__('Lineage', 'vibepresto'); ?>:</strong> <?php echo esc_html($active_bundle['lineage_name']); ?></p>
+        <p><strong><?php echo esc_html__('Version', 'vibepresto'); ?>:</strong> <?php echo esc_html((string) $active_bundle['version_number']); ?></p>
         <p><strong><?php echo esc_html__('Mode', 'vibepresto'); ?>:</strong> <?php echo esc_html($active_bundle['mode']); ?></p>
         <p><strong><?php echo esc_html__('Entry HTML', 'vibepresto'); ?>:</strong> <code><?php echo esc_html($active_bundle['entry_html']); ?></code></p>
         <p>
@@ -28,7 +30,7 @@ if (! defined('ABSPATH')) {
             <option value="0"><?php echo esc_html__('Use normal WordPress rendering', 'vibepresto'); ?></option>
             <?php foreach ($bundles as $bundle) : ?>
                 <option value="<?php echo esc_attr((string) $bundle['id']); ?>" <?php selected($selected_bundle_id, $bundle['id']); ?>>
-                    <?php echo esc_html($bundle['title'] . ' (' . $bundle['mode'] . ')'); ?>
+                    <?php echo esc_html($bundle['version_label'] . ' (' . $bundle['mode'] . ')'); ?>
                 </option>
             <?php endforeach; ?>
         </select>
@@ -42,7 +44,7 @@ if (! defined('ABSPATH')) {
     <hr>
 
     <p><strong><?php echo esc_html__('Upload new bundle', 'vibepresto'); ?></strong></p>
-    <p><?php echo esc_html__('Upload a new ZIP bundle or separate HTML/CSS/JS files right here. You can assign the new bundle to this page immediately after upload.', 'vibepresto'); ?></p>
+    <p><?php echo esc_html__('Upload a new ZIP bundle or separate HTML/CSS/JS files right here. If this page already has a bundle assigned, the upload becomes the next version in that same lineage.', 'vibepresto'); ?></p>
     <?php
     $form_variant = 'page';
     $submit_label = __('Upload and keep editing', 'vibepresto');

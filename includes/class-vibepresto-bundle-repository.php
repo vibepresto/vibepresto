@@ -17,6 +17,12 @@ class Bundle_Repository
     private const STORAGE_PATH_META_KEY = '_vibepresto_storage_path';
     private const STORAGE_URL_META_KEY = '_vibepresto_storage_url';
     private const FILES_META_KEY = '_vibepresto_files';
+    private const LINEAGE_ID_META_KEY = '_vibepresto_lineage_id';
+    private const LINEAGE_NAME_META_KEY = '_vibepresto_lineage_name';
+    private const VERSION_NUMBER_META_KEY = '_vibepresto_version_number';
+    private const VERSION_LABEL_META_KEY = '_vibepresto_version_label';
+    private const CURRENT_META_KEY = '_vibepresto_is_current';
+    private const SOURCE_PAGE_ID_META_KEY = '_vibepresto_source_page_id';
     public const PAGE_META_KEY = '_vibepresto_bundle_id';
 
     public function ensure_upload_root(): void
@@ -26,15 +32,95 @@ class Bundle_Repository
 
     public function all(): array
     {
-        $posts = get_posts([
-            'post_type' => 'vibepresto_bundle',
-            'post_status' => 'publish',
-            'posts_per_page' => -1,
-            'orderby' => 'date',
-            'order' => 'DESC',
-        ]);
+        return $this->current_versions();
+    }
 
-        return array_map([$this, 'hydrate_bundle'], $posts);
+    public function current_versions(): array
+    {
+        $lineages = $this->list_lineages();
+
+        return array_values(array_map(static function (array $lineage): array {
+            return $lineage['current_version'];
+        }, $lineages));
+    }
+
+    public function all_versions(): array
+    {
+        return array_map([$this, 'hydrate_bundle'], $this->bundle_posts());
+    }
+
+    public function list_lineages(): array
+    {
+        $versions = $this->all_versions();
+        $grouped = [];
+
+        foreach ($versions as $version) {
+            $lineage_id = (int) $version['lineage_id'];
+            if (! isset($grouped[$lineage_id])) {
+                $grouped[$lineage_id] = [
+                    'lineage_id' => $lineage_id,
+                    'lineage_name' => $version['lineage_name'],
+                    'version_count' => 0,
+                    'current_version' => null,
+                    'versions' => [],
+                    'updated_at' => $version['updated_at'],
+                ];
+            }
+
+            $grouped[$lineage_id]['versions'][] = $version;
+            $grouped[$lineage_id]['version_count']++;
+            if (strtotime($version['updated_at']) > strtotime($grouped[$lineage_id]['updated_at'])) {
+                $grouped[$lineage_id]['updated_at'] = $version['updated_at'];
+            }
+        }
+
+        foreach ($grouped as $lineage_id => $lineage) {
+            usort($lineage['versions'], static function (array $left, array $right): int {
+                $version_compare = ($right['version_number'] ?? 0) <=> ($left['version_number'] ?? 0);
+                if ($version_compare !== 0) {
+                    return $version_compare;
+                }
+
+                return strtotime($right['updated_at'] ?? '') <=> strtotime($left['updated_at'] ?? '');
+            });
+
+            $current_version = null;
+            foreach ($lineage['versions'] as $version) {
+                if (! empty($version['is_current'])) {
+                    $current_version = $version;
+                    break;
+                }
+            }
+
+            if ($current_version === null) {
+                $current_version = $lineage['versions'][0] ?? null;
+            }
+
+            $grouped[$lineage_id]['versions'] = $lineage['versions'];
+            $grouped[$lineage_id]['current_version'] = $current_version;
+        }
+
+        usort($grouped, static function (array $left, array $right): int {
+            return strtotime($right['updated_at'] ?? '') <=> strtotime($left['updated_at'] ?? '');
+        });
+
+        return array_values($grouped);
+    }
+
+    public function versions_for_lineage(int $bundle_or_lineage_id): array
+    {
+        $lineage_id = $this->resolve_lineage_id($bundle_or_lineage_id);
+        if ($lineage_id < 1) {
+            return [];
+        }
+
+        foreach ($this->list_lineages() as $lineage) {
+            if ((int) $lineage['lineage_id'] === $lineage_id) {
+                return $lineage['versions'];
+            }
+        }
+
+        return [];
     }
 
     public function find(int $bundle_id): ?array
@@ -45,6 +131,47 @@ class Bundle_Repository
         }
 
         return $this->hydrate_bundle($post);
+    }
+
+    public function find_version_by_number(int $lineage_or_bundle_id, int $version_number): ?array
+    {
+        foreach ($this->versions_for_lineage($lineage_or_bundle_id) as $version) {
+            if ((int) $version['version_number'] === $version_number) {
+                return $version;
+            }
+        }
+
+        return null;
+    }
+
+    public function resolve_lineage_id(int $bundle_or_lineage_id): int
+    {
+        if ($bundle_or_lineage_id < 1) {
+            return 0;
+        }
+
+        $bundle = $this->find($bundle_or_lineage_id);
+        if ($bundle) {
+            return (int) $bundle['lineage_id'];
+        }
+
+        return $bundle_or_lineage_id;
+    }
+
+    public function get_current_version_for_lineage(int $lineage_or_bundle_id): ?array
+    {
+        $lineage_id = $this->resolve_lineage_id($lineage_or_bundle_id);
+        if ($lineage_id < 1) {
+            return null;
+        }
+
+        foreach ($this->list_lineages() as $lineage) {
+            if ((int) $lineage['lineage_id'] === $lineage_id) {
+                return $lineage['current_version'];
+            }
+        }
+
+        return null;
     }
 
     public function assign_to_page(int $page_id, int $bundle_id): void
@@ -62,36 +189,74 @@ class Bundle_Repository
         return (int) get_post_meta($page_id, self::PAGE_META_KEY, true);
     }
 
-    public function delete(int $bundle_id): bool
+    public function promote_version(int $bundle_id, int $page_id = 0)
     {
         $bundle = $this->find($bundle_id);
         if (! $bundle) {
-            return false;
+            return new WP_Error('not_found', __('The requested bundle version could not be found.', 'vibepresto'));
         }
 
-        global $wpdb;
+        $this->set_current_version((int) $bundle['lineage_id'], $bundle_id);
 
-        $wpdb->delete(
-            $wpdb->postmeta,
-            [
-                'meta_key' => self::PAGE_META_KEY,
-                'meta_value' => $bundle_id,
-            ],
-            ['%s', '%d']
-        );
-        $this->delete_directory($bundle['storage_path']);
-        return (bool) wp_delete_post($bundle_id, true);
+        if ($page_id > 0) {
+            $page = get_post($page_id);
+            if (! $page instanceof WP_Post || $page->post_type !== 'page') {
+                return new WP_Error('not_found', __('The requested page could not be found.', 'vibepresto'));
+            }
+
+            $this->assign_to_page($page_id, $bundle_id);
+        }
+
+        return $this->find($bundle_id);
     }
 
-    public function create_from_zip(array $zip_file, string $display_name)
+    public function delete(int $bundle_id)
+    {
+        $bundle = $this->find($bundle_id);
+        if (! $bundle) {
+            return new WP_Error('not_found', __('The requested bundle version could not be found.', 'vibepresto'));
+        }
+
+        $versions = $this->versions_for_lineage((int) $bundle['lineage_id']);
+        $replacement = null;
+
+        if (! empty($bundle['is_current'])) {
+            foreach ($versions as $candidate) {
+                if ((int) $candidate['id'] !== $bundle_id) {
+                    $replacement = $candidate;
+                    break;
+                }
+            }
+        }
+
+        if ($replacement) {
+            $this->set_current_version((int) $bundle['lineage_id'], (int) $replacement['id']);
+            $this->reassign_pages_from_version($bundle_id, (int) $replacement['id']);
+        } else {
+            $this->clear_page_assignments_for_bundle($bundle_id);
+        }
+
+        $this->delete_directory($bundle['storage_path']);
+
+        if (! wp_delete_post($bundle_id, true)) {
+            return new WP_Error('delete_failed', __('The bundle version could not be deleted.', 'vibepresto'));
+        }
+
+        return true;
+    }
+
+    public function create_from_zip(array $zip_file, string $display_name, array $options = [])
     {
         $this->ensure_upload_root();
         $this->validate_uploaded_file($zip_file, ['zip'], __('A ZIP bundle is required.', 'vibepresto'));
 
-        $bundle_name = $this->normalize_name($display_name, $zip_file['name']);
-        $tmp_path = $zip_file['tmp_name'];
-        $bundle_id = $this->create_bundle_post($bundle_name);
+        $draft = $this->prepare_version_draft($display_name, $zip_file['name'], $options);
+        if (is_wp_error($draft)) {
+            return $draft;
+        }
 
+        $tmp_path = $zip_file['tmp_name'];
+        $bundle_id = $this->create_bundle_post($draft['version_label']);
         if (is_wp_error($bundle_id)) {
             return $bundle_id;
         }
@@ -129,12 +294,12 @@ class Bundle_Repository
 
         $files = $this->scan_bundle_files($directory['path']);
         $relative_entry = $this->relative_path($directory['path'], $entry_file);
-        $this->persist_bundle_meta($bundle_id, 'zip', $directory, $relative_entry, $files);
+        $this->persist_bundle_meta($bundle_id, 'zip', $directory, $relative_entry, $files, $draft);
 
         return $bundle_id;
     }
 
-    public function create_from_files(array $html_file, array $css_file, array $js_file, array $asset_files, string $display_name)
+    public function create_from_files(array $html_file, array $css_file, array $js_file, array $asset_files, string $display_name, array $options = [])
     {
         $this->ensure_upload_root();
         $this->validate_uploaded_file($html_file, ['html', 'htm'], __('An HTML file is required.', 'vibepresto'));
@@ -147,9 +312,12 @@ class Bundle_Repository
             $this->validate_uploaded_file($js_file, ['js'], __('JS files must end in .js.', 'vibepresto'));
         }
 
-        $bundle_name = $this->normalize_name($display_name, $html_file['name']);
-        $bundle_id = $this->create_bundle_post($bundle_name);
+        $draft = $this->prepare_version_draft($display_name, $html_file['name'], $options);
+        if (is_wp_error($draft)) {
+            return $draft;
+        }
 
+        $bundle_id = $this->create_bundle_post($draft['version_label']);
         if (is_wp_error($bundle_id)) {
             return $bundle_id;
         }
@@ -224,17 +392,60 @@ class Bundle_Repository
             'separate',
             $directory,
             $this->relative_path($directory['path'], $entry_file),
-            $stored_files
+            $stored_files,
+            $draft
         );
 
         return $bundle_id;
     }
 
+    private function bundle_posts(): array
+    {
+        return get_posts([
+            'post_type' => 'vibepresto_bundle',
+            'post_status' => 'publish',
+            'posts_per_page' => -1,
+            'orderby' => 'date',
+            'order' => 'DESC',
+        ]);
+    }
+
     private function hydrate_bundle(WP_Post $post): array
     {
+        $lineage_id = (int) get_post_meta($post->ID, self::LINEAGE_ID_META_KEY, true);
+        if ($lineage_id < 1) {
+            $lineage_id = (int) $post->ID;
+        }
+
+        $lineage_name = (string) get_post_meta($post->ID, self::LINEAGE_NAME_META_KEY, true);
+        if ($lineage_name === '') {
+            $lineage_name = $post->post_title;
+        }
+
+        $version_number = (int) get_post_meta($post->ID, self::VERSION_NUMBER_META_KEY, true);
+        if ($version_number < 1) {
+            $version_number = 1;
+        }
+
+        $version_label = (string) get_post_meta($post->ID, self::VERSION_LABEL_META_KEY, true);
+        if ($version_label === '') {
+            $version_label = $version_number > 1
+                ? sprintf('%s v%d', $lineage_name, $version_number)
+                : $lineage_name;
+        }
+
+        $is_current = get_post_meta($post->ID, self::CURRENT_META_KEY, true);
+        $is_current = $is_current === '' ? true : ((int) $is_current === 1);
+
         return [
             'id' => (int) $post->ID,
-            'title' => $post->post_title,
+            'title' => $lineage_name,
+            'lineage_name' => $lineage_name,
+            'lineage_id' => $lineage_id,
+            'version_number' => $version_number,
+            'version_label' => $version_label,
+            'is_current' => $is_current,
+            'source_page_id' => (int) get_post_meta($post->ID, self::SOURCE_PAGE_ID_META_KEY, true),
             'mode' => (string) get_post_meta($post->ID, self::MODE_META_KEY, true),
             'entry_html' => (string) get_post_meta($post->ID, self::ENTRY_META_KEY, true),
             'storage_path' => (string) get_post_meta($post->ID, self::STORAGE_PATH_META_KEY, true),
@@ -245,13 +456,51 @@ class Bundle_Repository
         ];
     }
 
-    private function persist_bundle_meta(int $bundle_id, string $mode, array $directory, string $entry_html, array $files): void
+    private function prepare_version_draft(string $display_name, string $fallback_file_name, array $options)
     {
+        $requested_lineage_id = isset($options['lineage_id']) ? (int) $options['lineage_id'] : 0;
+        $source_page_id = isset($options['source_page_id']) ? (int) $options['source_page_id'] : 0;
+
+        $lineage_id = $requested_lineage_id > 0 ? $this->resolve_lineage_id($requested_lineage_id) : 0;
+        $lineage_name = $this->normalize_name($display_name, $fallback_file_name);
+        $version_number = 1;
+
+        if ($lineage_id > 0) {
+            $current = $this->get_current_version_for_lineage($lineage_id);
+            if (! $current) {
+                return new WP_Error('not_found', __('The requested bundle lineage could not be found.', 'vibepresto'));
+            }
+
+            $lineage_name = $current['lineage_name'];
+            $version_number = $this->next_version_number($lineage_id);
+        }
+
+        return [
+            'lineage_id' => $lineage_id,
+            'lineage_name' => $lineage_name,
+            'version_number' => $version_number,
+            'version_label' => $this->build_version_label($lineage_name, $version_number),
+            'source_page_id' => $source_page_id,
+        ];
+    }
+
+    private function persist_bundle_meta(int $bundle_id, string $mode, array $directory, string $entry_html, array $files, array $draft): void
+    {
+        $lineage_id = (int) ($draft['lineage_id'] ?: $bundle_id);
+
         update_post_meta($bundle_id, self::MODE_META_KEY, $mode);
         update_post_meta($bundle_id, self::ENTRY_META_KEY, $entry_html);
         update_post_meta($bundle_id, self::STORAGE_PATH_META_KEY, $directory['path']);
         update_post_meta($bundle_id, self::STORAGE_URL_META_KEY, $directory['url']);
         update_post_meta($bundle_id, self::FILES_META_KEY, $files);
+        update_post_meta($bundle_id, self::LINEAGE_ID_META_KEY, $lineage_id);
+        update_post_meta($bundle_id, self::LINEAGE_NAME_META_KEY, $draft['lineage_name']);
+        update_post_meta($bundle_id, self::VERSION_NUMBER_META_KEY, (int) $draft['version_number']);
+        update_post_meta($bundle_id, self::VERSION_LABEL_META_KEY, $draft['version_label']);
+        update_post_meta($bundle_id, self::CURRENT_META_KEY, 1);
+        update_post_meta($bundle_id, self::SOURCE_PAGE_ID_META_KEY, (int) ($draft['source_page_id'] ?? 0));
+
+        $this->set_current_version($lineage_id, $bundle_id);
     }
 
     private function get_upload_root(): array
@@ -289,6 +538,64 @@ class Bundle_Repository
         }
 
         return ['path' => $path, 'url' => $url];
+    }
+
+    private function set_current_version(int $lineage_id, int $bundle_id): void
+    {
+        foreach ($this->versions_for_lineage($lineage_id) as $version) {
+            update_post_meta((int) $version['id'], self::CURRENT_META_KEY, (int) ((int) $version['id'] === $bundle_id));
+        }
+
+        update_post_meta($bundle_id, self::CURRENT_META_KEY, 1);
+    }
+
+    private function next_version_number(int $lineage_id): int
+    {
+        $versions = $this->versions_for_lineage($lineage_id);
+        if (! $versions) {
+            return 1;
+        }
+
+        return max(array_map(static function (array $version): int {
+            return (int) $version['version_number'];
+        }, $versions)) + 1;
+    }
+
+    private function build_version_label(string $lineage_name, int $version_number): string
+    {
+        return $version_number > 1
+            ? sprintf('%s v%d', $lineage_name, $version_number)
+            : sprintf('%s v1', $lineage_name);
+    }
+
+    private function clear_page_assignments_for_bundle(int $bundle_id): void
+    {
+        global $wpdb;
+
+        $wpdb->delete(
+            $wpdb->postmeta,
+            [
+                'meta_key' => self::PAGE_META_KEY,
+                'meta_value' => $bundle_id,
+            ],
+            ['%s', '%d']
+        );
+    }
+
+    private function reassign_pages_from_version(int $old_bundle_id, int $new_bundle_id): void
+    {
+        $pages = get_posts([
+            'post_type' => 'page',
+            'post_status' => ['publish', 'draft', 'pending', 'private', 'future'],
+            'posts_per_page' => -1,
+            'meta_key' => self::PAGE_META_KEY,
+            'meta_value' => $old_bundle_id,
+            'fields' => 'ids',
+        ]);
+
+        foreach ($pages as $page_id) {
+            update_post_meta((int) $page_id, self::PAGE_META_KEY, $new_bundle_id);
+        }
     }
 
     private function validate_zip_archive(ZipArchive $archive)

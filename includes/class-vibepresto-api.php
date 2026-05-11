@@ -84,9 +84,27 @@ class API
             'permission_callback' => '__return_true',
         ]);
 
+        register_rest_route('vibepresto/v1', '/pages/(?P<id>\d+)/bundle-rollback', [
+            'methods' => 'POST',
+            'callback' => [$this, 'rollback_page_bundle'],
+            'permission_callback' => '__return_true',
+        ]);
+
         register_rest_route('vibepresto/v1', '/bundles', [
             'methods' => 'GET',
             'callback' => [$this, 'list_bundles'],
+            'permission_callback' => '__return_true',
+        ]);
+
+        register_rest_route('vibepresto/v1', '/bundles/(?P<id>\d+)/versions', [
+            'methods' => 'GET',
+            'callback' => [$this, 'list_bundle_versions'],
+            'permission_callback' => '__return_true',
+        ]);
+
+        register_rest_route('vibepresto/v1', '/bundles/versions/(?P<id>\d+)/promote', [
+            'methods' => 'POST',
+            'callback' => [$this, 'promote_bundle_version'],
             'permission_callback' => '__return_true',
         ]);
 
@@ -221,6 +239,7 @@ class API
 
         $homepage_id = (int) get_option('page_on_front');
         $items = array_map(static function (WP_Post $page) use ($homepage_id): array {
+            $assigned_bundle_id = (int) get_post_meta($page->ID, Bundle_Repository::PAGE_META_KEY, true);
             return [
                 'id' => (int) $page->ID,
                 'title' => $page->post_title,
@@ -228,6 +247,7 @@ class API
                 'status' => $page->post_status,
                 'url' => get_permalink($page->ID),
                 'is_homepage' => $homepage_id > 0 && $homepage_id === (int) $page->ID,
+                'assigned_bundle_id' => $assigned_bundle_id,
             ];
         }, $pages);
 
@@ -351,6 +371,55 @@ class API
         ]);
     }
 
+    public function rollback_page_bundle(WP_REST_Request $request): WP_REST_Response
+    {
+        $auth = $this->require_bearer_auth($request);
+        if (is_wp_error($auth)) {
+            return $this->from_error($auth);
+        }
+
+        if (! current_user_can('manage_options')) {
+            return $this->error('forbidden', __('Only administrators can roll back bundle versions.', 'vibepresto'), 403);
+        }
+
+        $page = $this->page_from_request($request);
+        if (is_wp_error($page)) {
+            return $this->from_error($page, 404);
+        }
+
+        $bundle_version_id = absint((string) ($request->get_param('bundle_version_id') ?: 0));
+        $version_number = absint((string) ($request->get_param('version_number') ?: 0));
+        $assigned_bundle_id = $this->bundles->get_assigned_bundle_id((int) $page->ID);
+        if ($assigned_bundle_id < 1) {
+            return $this->error('invalid_request', __('That page does not currently have an assigned bundle.', 'vibepresto'), 400);
+        }
+        $assigned_lineage_id = $this->bundles->resolve_lineage_id($assigned_bundle_id);
+
+        $target = null;
+        if ($bundle_version_id > 0) {
+            $target = $this->bundles->find($bundle_version_id);
+        } elseif ($version_number > 0) {
+            $target = $this->bundles->find_version_by_number($assigned_bundle_id, $version_number);
+        } else {
+            return $this->error('invalid_request', __('Provide either a bundle version id or a version number.', 'vibepresto'), 400);
+        }
+
+        if (! $target) {
+            return $this->error('not_found', __('The requested bundle version could not be found.', 'vibepresto'), 404);
+        }
+
+        if ((int) $target['lineage_id'] !== $assigned_lineage_id) {
+            return $this->error('invalid_request', __('You can only roll back to a version in the page\'s current bundle lineage.', 'vibepresto'), 400);
+        }
+
+        $promoted = $this->bundles->promote_version((int) $target['id'], (int) $page->ID);
+        if (is_wp_error($promoted)) {
+            return $this->from_error($promoted);
+        }
+
+        return $this->success($this->bundle_version_payload($promoted, (int) $page->ID));
+    }
+
     public function list_bundles(WP_REST_Request $request): WP_REST_Response
     {
         $auth = $this->require_bearer_auth($request);
@@ -358,19 +427,65 @@ class API
             return $this->from_error($auth);
         }
 
-        $bundles = array_map(static function (array $bundle): array {
+        $bundles = array_map(static function (array $lineage): array {
+            $current = $lineage['current_version'];
             return [
-                'bundle_id' => $bundle['id'],
-                'bundle_title' => $bundle['title'],
-                'mode' => $bundle['mode'],
-                'entry_html' => $bundle['entry_html'],
-                'updated_at' => $bundle['updated_at'],
+                'lineage_id' => $lineage['lineage_id'],
+                'bundle_title' => $lineage['lineage_name'],
+                'bundle_version_id' => $current['id'],
+                'bundle_version_number' => $current['version_number'],
+                'bundle_version_label' => $current['version_label'],
+                'mode' => $current['mode'],
+                'entry_html' => $current['entry_html'],
+                'updated_at' => $lineage['updated_at'],
+                'version_count' => $lineage['version_count'],
             ];
-        }, $this->bundles->all());
+        }, $this->bundles->list_lineages());
 
         return $this->success([
             'items' => $bundles,
         ]);
+    }
+
+    public function list_bundle_versions(WP_REST_Request $request): WP_REST_Response
+    {
+        $auth = $this->require_bearer_auth($request);
+        if (is_wp_error($auth)) {
+            return $this->from_error($auth);
+        }
+
+        $lineage_id = absint((string) $request->get_param('id'));
+        $versions = $this->bundles->versions_for_lineage($lineage_id);
+        if (! $versions) {
+            return $this->error('not_found', __('The requested bundle lineage could not be found.', 'vibepresto'), 404);
+        }
+
+        return $this->success([
+            'lineage_id' => $this->bundles->resolve_lineage_id($lineage_id),
+            'bundle_title' => $versions[0]['lineage_name'],
+            'items' => array_map([$this, 'bundle_version_payload'], $versions),
+        ]);
+    }
+
+    public function promote_bundle_version(WP_REST_Request $request): WP_REST_Response
+    {
+        $auth = $this->require_bearer_auth($request);
+        if (is_wp_error($auth)) {
+            return $this->from_error($auth);
+        }
+
+        if (! current_user_can('manage_options')) {
+            return $this->error('forbidden', __('Only administrators can promote bundle versions.', 'vibepresto'), 403);
+        }
+
+        $bundle_id = absint((string) $request->get_param('id'));
+        $page_id = absint((string) ($request->get_param('page_id') ?: 0));
+        $promoted = $this->bundles->promote_version($bundle_id, $page_id);
+        if (is_wp_error($promoted)) {
+            return $this->from_error($promoted);
+        }
+
+        return $this->success($this->bundle_version_payload($promoted, $page_id));
     }
 
     public function upload_bundle(WP_REST_Request $request): WP_REST_Response
@@ -387,17 +502,32 @@ class API
         $mode = sanitize_key((string) $request->get_param('mode'));
         $display_name = sanitize_text_field((string) $request->get_param('display_name'));
         $assign_page_id = absint((string) ($request->get_param('assign_page_id') ?: 0));
+        $lineage_id = absint((string) ($request->get_param('lineage_id') ?: 0));
+
+        if ($assign_page_id > 0 && $lineage_id < 1) {
+            $existing_bundle_id = $this->bundles->get_assigned_bundle_id($assign_page_id);
+            if ($existing_bundle_id > 0) {
+                $lineage_id = $this->bundles->resolve_lineage_id($existing_bundle_id);
+            }
+        }
 
         try {
             if ($mode === 'zip') {
-                $bundle_id = $this->bundles->create_from_zip($this->file_param('bundle_zip'), $display_name);
+                $bundle_id = $this->bundles->create_from_zip($this->file_param('bundle_zip'), $display_name, [
+                    'lineage_id' => $lineage_id,
+                    'source_page_id' => $assign_page_id,
+                ]);
             } elseif ($mode === 'separate') {
                 $bundle_id = $this->bundles->create_from_files(
                     $this->file_param('bundle_html'),
                     $this->optional_file_param('bundle_css'),
                     $this->optional_file_param('bundle_js'),
                     $this->optional_assets_param(),
-                    $display_name
+                    $display_name,
+                    [
+                        'lineage_id' => $lineage_id,
+                        'source_page_id' => $assign_page_id,
+                    ]
                 );
             } else {
                 return $this->error('invalid_request', __('Choose a valid upload mode.', 'vibepresto'), 400);
@@ -427,7 +557,13 @@ class API
 
         return $this->success([
             'bundle_id' => (int) $bundle_id,
-            'bundle_title' => $bundle['title'] ?? '',
+            'bundle_title' => $bundle['lineage_name'] ?? '',
+            'bundle_version_id' => $bundle['id'] ?? (int) $bundle_id,
+            'bundle_version_number' => $bundle['version_number'] ?? 1,
+            'bundle_version_label' => $bundle['version_label'] ?? '',
+            'lineage_id' => $bundle['lineage_id'] ?? (int) $bundle_id,
+            'lineage_name' => $bundle['lineage_name'] ?? '',
+            'is_current' => $bundle['is_current'] ?? true,
             'mode' => $bundle['mode'] ?? $mode,
             'entry_html' => $bundle['entry_html'] ?? '',
             'assigned_page_id' => $assigned_page_id,
@@ -470,6 +606,8 @@ class API
     private function page_payload(WP_Post $page): array
     {
         $page_id = (int) $page->ID;
+        $assigned_bundle_id = $this->bundles->get_assigned_bundle_id($page_id);
+        $assigned_bundle = $assigned_bundle_id > 0 ? $this->bundles->find($assigned_bundle_id) : null;
 
         return [
             'page_id' => $page_id,
@@ -478,6 +616,28 @@ class API
             'page_status' => $page->post_status,
             'page_url' => get_permalink($page_id),
             'is_homepage' => (int) get_option('page_on_front') === $page_id,
+            'assigned_bundle_id' => $assigned_bundle_id,
+            'assigned_bundle_title' => $assigned_bundle['lineage_name'] ?? '',
+            'assigned_bundle_version_id' => $assigned_bundle['id'] ?? 0,
+            'assigned_bundle_version_number' => $assigned_bundle['version_number'] ?? 0,
+        ];
+    }
+
+    private function bundle_version_payload(array $bundle, int $page_id = 0): array
+    {
+        return [
+            'bundle_id' => (int) $bundle['lineage_id'],
+            'bundle_title' => $bundle['lineage_name'],
+            'bundle_version_id' => (int) $bundle['id'],
+            'bundle_version_number' => (int) $bundle['version_number'],
+            'bundle_version_label' => $bundle['version_label'],
+            'lineage_id' => (int) $bundle['lineage_id'],
+            'lineage_name' => $bundle['lineage_name'],
+            'mode' => $bundle['mode'],
+            'entry_html' => $bundle['entry_html'],
+            'is_current' => (bool) $bundle['is_current'],
+            'source_page_id' => (int) $bundle['source_page_id'],
+            'page_id' => $page_id,
         ];
     }
 

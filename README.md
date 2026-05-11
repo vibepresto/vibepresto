@@ -1,10 +1,11 @@
 # VibePresto
 
-WordPress plugin for creating and managing pages, uploading static HTML/CSS/JS bundles, and assigning them as full-page takeovers.
+WordPress plugin for creating and managing pages, uploading versioned static HTML/CSS/JS bundles, and assigning them as full-page takeovers.
 
 ## Scope
 
 - bundle upload and storage
+- bundle lineage versioning and rollback
 - page creation and lifecycle management
 - page assignment
 - homepage assignment

@@ -81,7 +81,7 @@ class Admin
             wp_die(esc_html__('You do not have permission to access this page.', 'vibepresto'));
         }
 
-        $bundles = $this->bundles->all();
+        $lineages = $this->bundles->list_lineages();
         $notice = $this->read_notice();
         $sessions = $this->auth->get_sessions();
         include VIBEPRESTO_PLUGIN_DIR . 'views/admin-page.php';
@@ -109,17 +109,32 @@ class Admin
         $display_name = sanitize_text_field(wp_unslash($_POST['display_name'] ?? ''));
         $page_id = isset($_POST['page_id']) ? (int) $_POST['page_id'] : 0;
         $assign_to_page = ! empty($_POST['assign_to_page']) && $page_id > 0;
+        $lineage_id = 0;
+
+        if ($assign_to_page) {
+            $existing_bundle_id = $this->bundles->get_assigned_bundle_id($page_id);
+            if ($existing_bundle_id > 0) {
+                $lineage_id = $this->bundles->resolve_lineage_id($existing_bundle_id);
+            }
+        }
 
         try {
             if ($mode === 'zip') {
-                $bundle_id = $this->bundles->create_from_zip($_FILES['bundle_zip'] ?? [], $display_name);
+                $bundle_id = $this->bundles->create_from_zip($_FILES['bundle_zip'] ?? [], $display_name, [
+                    'lineage_id' => $lineage_id,
+                    'source_page_id' => $assign_to_page ? $page_id : 0,
+                ]);
             } elseif ($mode === 'separate') {
                 $bundle_id = $this->bundles->create_from_files(
                     $_FILES['bundle_html'] ?? [],
                     $_FILES['bundle_css'] ?? [],
                     $_FILES['bundle_js'] ?? [],
                     $_FILES['bundle_assets'] ?? [],
-                    $display_name
+                    $display_name,
+                    [
+                        'lineage_id' => $lineage_id,
+                        'source_page_id' => $assign_to_page ? $page_id : 0,
+                    ]
                 );
             } else {
                 throw new RuntimeException(__('Choose a valid upload mode.', 'vibepresto'));
@@ -148,11 +163,16 @@ class Admin
         $this->assert_admin_request('vibepresto_delete_bundle');
 
         $bundle_id = isset($_POST['bundle_id']) ? (int) $_POST['bundle_id'] : 0;
-        if ($bundle_id < 1 || ! $this->bundles->delete($bundle_id)) {
-            $this->redirect_with_notice('error', __('Unable to delete that bundle.', 'vibepresto'));
+        $deleted = $bundle_id > 0 ? $this->bundles->delete($bundle_id) : false;
+        if (is_wp_error($deleted)) {
+            $this->redirect_with_notice('error', $deleted->get_error_message());
         }
 
-        $this->redirect_with_notice('success', __('Bundle deleted.', 'vibepresto'));
+        if (! $deleted) {
+            $this->redirect_with_notice('error', __('Unable to delete that bundle version.', 'vibepresto'));
+        }
+
+        $this->redirect_with_notice('success', __('Bundle version deleted.', 'vibepresto'));
     }
 
     public function handle_authorize_device(): void
@@ -361,6 +381,8 @@ class Admin
                 'uploadTab' => __('Upload', 'vibepresto'),
                 'activeTitle' => __('Active bundle', 'vibepresto'),
                 'activeDescription' => __('Visitors see this takeover bundle instead of the normal WordPress page template.', 'vibepresto'),
+                'lineage' => __('Lineage', 'vibepresto'),
+                'version' => __('Version', 'vibepresto'),
                 'mode' => __('Mode', 'vibepresto'),
                 'entryHtml' => __('Entry HTML', 'vibepresto'),
                 'frontendUrl' => __('Frontend URL', 'vibepresto'),
@@ -371,7 +393,7 @@ class Admin
                 'previewPage' => __('Preview current page', 'vibepresto'),
                 'manageBundles' => __('Manage all bundles', 'vibepresto'),
                 'uploadTitle' => __('Upload new bundle', 'vibepresto'),
-                'uploadHelp' => __('Upload a ZIP bundle or separate HTML/CSS/JS files from the editor sidebar.', 'vibepresto'),
+                'uploadHelp' => __('Upload a ZIP bundle or separate HTML/CSS/JS files from the editor sidebar. If this page already has a bundle, the upload becomes a new version in the same lineage.', 'vibepresto'),
                 'displayName' => __('Display name', 'vibepresto'),
                 'displayNamePlaceholder' => __('Landing page bundle', 'vibepresto'),
                 'uploadMode' => __('Upload mode', 'vibepresto'),

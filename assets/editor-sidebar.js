@@ -50,8 +50,10 @@
                 Fragment,
                 { key: 'active-bundle' },
                 el('p', null, el('strong', null, strings.activeTitle)),
-                el('p', null, activeBundle.title),
+                el('p', null, activeBundle.version_label || activeBundle.title),
                 el('p', null, strings.activeDescription),
+                el('p', null, strings.lineage + ': ' + activeBundle.lineage_name),
+                el('p', null, strings.version + ': ' + String(activeBundle.version_number || 1)),
                 el('p', null, strings.mode + ': ' + activeBundle.mode),
                 el('p', null, strings.entryHtml + ': ', el('code', null, activeBundle.entry_html)),
                 links.preview ? el('p', null, strings.frontendUrl + ': ', el('a', {
@@ -219,7 +221,7 @@
             value: '0'
         }].concat(bundles.map(function (bundle) {
             return {
-                label: bundle.title + ' (' + bundle.mode + ')',
+                label: (bundle.version_label || bundle.title) + ' (' + bundle.mode + ')',
                 value: String(bundle.id)
             };
         }));

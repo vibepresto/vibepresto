@@ -25,6 +25,7 @@ $use_standalone_form = $use_standalone_form ?? true;
         <div class="vibepresto-field">
             <label for="display_name_<?php echo esc_attr($form_variant); ?>"><strong><?php echo esc_html__('Display name', 'vibepresto'); ?></strong></label>
             <input id="display_name_<?php echo esc_attr($form_variant); ?>" name="display_name" type="text" class="regular-text" placeholder="<?php echo esc_attr__('Landing page bundle', 'vibepresto'); ?>">
+            <p class="description"><?php echo esc_html__('Used as the lineage name for new bundles. Updates to an already-assigned page keep the existing lineage name.', 'vibepresto'); ?></p>
         </div>
 
         <div class="vibepresto-field">
