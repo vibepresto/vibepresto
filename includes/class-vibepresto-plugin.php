@@ -7,7 +7,9 @@ if (! defined('ABSPATH')) {
 }
 
 require_once VIBEPRESTO_PLUGIN_DIR . 'includes/class-vibepresto-bundle-repository.php';
+require_once VIBEPRESTO_PLUGIN_DIR . 'includes/class-vibepresto-auth-store.php';
 require_once VIBEPRESTO_PLUGIN_DIR . 'includes/class-vibepresto-admin.php';
+require_once VIBEPRESTO_PLUGIN_DIR . 'includes/class-vibepresto-api.php';
 require_once VIBEPRESTO_PLUGIN_DIR . 'includes/class-vibepresto-renderer.php';
 
 class Plugin
@@ -17,6 +19,10 @@ class Plugin
     private Bundle_Repository $bundles;
 
     private Admin $admin;
+
+    private Auth_Store $auth;
+
+    private API $api;
 
     private Renderer $renderer;
 
@@ -32,7 +38,9 @@ class Plugin
     private function __construct()
     {
         $this->bundles = new Bundle_Repository();
-        $this->admin = new Admin($this->bundles);
+        $this->auth = new Auth_Store();
+        $this->admin = new Admin($this->bundles, $this->auth);
+        $this->api = new API($this->bundles, $this->auth);
         $this->renderer = new Renderer($this->bundles);
 
         register_activation_hook(VIBEPRESTO_PLUGIN_FILE, [$this, 'activate']);
@@ -66,7 +74,9 @@ class Plugin
     public function boot(): void
     {
         $this->bundles->ensure_upload_root();
+        $this->auth->cleanup_expired();
         $this->admin->register();
+        $this->api->register();
         $this->renderer->register();
     }
 }

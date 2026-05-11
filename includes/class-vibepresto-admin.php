@@ -12,9 +12,12 @@ class Admin
 {
     private Bundle_Repository $bundles;
 
-    public function __construct(Bundle_Repository $bundles)
+    private Auth_Store $auth;
+
+    public function __construct(Bundle_Repository $bundles, Auth_Store $auth)
     {
         $this->bundles = $bundles;
+        $this->auth = $auth;
     }
 
     public function register(): void
@@ -24,6 +27,9 @@ class Admin
         add_action('admin_menu', [$this, 'register_menu']);
         add_action('admin_post_vibepresto_create_bundle', [$this, 'handle_create_bundle']);
         add_action('admin_post_vibepresto_delete_bundle', [$this, 'handle_delete_bundle']);
+        add_action('admin_post_vibepresto_authorize_device', [$this, 'handle_authorize_device']);
+        add_action('admin_post_vibepresto_deny_device', [$this, 'handle_deny_device']);
+        add_action('admin_post_vibepresto_revoke_session', [$this, 'handle_revoke_session']);
         add_action('add_meta_boxes_page', [$this, 'register_page_meta_box']);
         add_action('enqueue_block_editor_assets', [$this, 'enqueue_block_editor_assets']);
         add_action('save_post_page', [$this, 'save_page_assignment']);
@@ -58,6 +64,15 @@ class Admin
             [$this, 'render_admin_page'],
             'dashicons-layout'
         );
+
+        add_submenu_page(
+            'vibepresto',
+            __('Authorize CLI', 'vibepresto'),
+            __('Authorize CLI', 'vibepresto'),
+            'manage_options',
+            'vibepresto-authorize',
+            [$this, 'render_authorize_page']
+        );
     }
 
     public function render_admin_page(): void
@@ -68,7 +83,22 @@ class Admin
 
         $bundles = $this->bundles->all();
         $notice = $this->read_notice();
+        $sessions = $this->auth->get_sessions();
         include VIBEPRESTO_PLUGIN_DIR . 'views/admin-page.php';
+    }
+
+    public function render_authorize_page(): void
+    {
+        if (! current_user_can('manage_options')) {
+            wp_die(esc_html__('You do not have permission to access this page.', 'vibepresto'));
+        }
+
+        $device_code = isset($_GET['device_code']) ? sanitize_text_field(wp_unslash($_GET['device_code'])) : '';
+        $user_code = isset($_GET['user_code']) ? sanitize_text_field(wp_unslash($_GET['user_code'])) : '';
+        $device = $device_code !== '' ? $this->auth->get_device_authorization($device_code) : null;
+        $notice = $this->read_notice();
+
+        include VIBEPRESTO_PLUGIN_DIR . 'views/authorize-page.php';
     }
 
     public function handle_create_bundle(): void
@@ -123,6 +153,54 @@ class Admin
         }
 
         $this->redirect_with_notice('success', __('Bundle deleted.', 'vibepresto'));
+    }
+
+    public function handle_authorize_device(): void
+    {
+        $this->assert_admin_request('vibepresto_authorize_device');
+
+        $device_code = sanitize_text_field(wp_unslash($_POST['device_code'] ?? ''));
+        $approved = $this->auth->approve_device_authorization($device_code, get_current_user_id());
+        if (is_wp_error($approved)) {
+            $this->redirect_with_notice('error', $approved->get_error_message(), 0, 'vibepresto-authorize', [
+                'device_code' => $device_code,
+            ]);
+        }
+
+        $this->redirect_with_notice('success', __('CLI access approved. You can return to the terminal now.', 'vibepresto'), 0, 'vibepresto-authorize', [
+            'device_code' => $device_code,
+            'user_code' => $approved['user_code'],
+        ]);
+    }
+
+    public function handle_deny_device(): void
+    {
+        $this->assert_admin_request('vibepresto_deny_device');
+
+        $device_code = sanitize_text_field(wp_unslash($_POST['device_code'] ?? ''));
+        $denied = $this->auth->deny_device_authorization($device_code);
+        if (is_wp_error($denied)) {
+            $this->redirect_with_notice('error', $denied->get_error_message(), 0, 'vibepresto-authorize', [
+                'device_code' => $device_code,
+            ]);
+        }
+
+        $this->redirect_with_notice('success', __('CLI access denied.', 'vibepresto'), 0, 'vibepresto-authorize', [
+            'device_code' => $device_code,
+            'user_code' => $denied['user_code'],
+        ]);
+    }
+
+    public function handle_revoke_session(): void
+    {
+        $this->assert_admin_request('vibepresto_revoke_session');
+
+        $session_id = sanitize_text_field(wp_unslash($_POST['session_id'] ?? ''));
+        if ($session_id === '' || ! $this->auth->revoke_session($session_id)) {
+            $this->redirect_with_notice('error', __('That CLI session could not be revoked.', 'vibepresto'));
+        }
+
+        $this->redirect_with_notice('success', __('CLI session revoked.', 'vibepresto'));
     }
 
     public function register_page_meta_box(): void
@@ -225,18 +303,18 @@ class Admin
         check_admin_referer($nonce_action);
     }
 
-    private function redirect_with_notice(string $type, string $message, int $page_id = 0): void
+    private function redirect_with_notice(string $type, string $message, int $page_id = 0, string $page_slug = 'vibepresto', array $extra_args = []): void
     {
         $args = [
             'vibepresto_notice' => rawurlencode($message),
             'vibepresto_notice_type' => rawurlencode($type),
-        ];
+        ] + $extra_args;
 
         if ($page_id > 0) {
             $url = add_query_arg($args, get_edit_post_link($page_id, 'url'));
         } else {
             $url = add_query_arg([
-            'page' => 'vibepresto',
+                'page' => $page_slug,
             ] + $args, admin_url('admin.php'));
         }
 
