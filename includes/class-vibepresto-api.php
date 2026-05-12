@@ -359,16 +359,19 @@ class API
             return $this->from_error($page, 404);
         }
 
+        if ($page->post_status !== 'publish') {
+            return $this->error('invalid_request', __('Publish the page before setting it as the homepage.', 'vibepresto'), 400);
+        }
+
         update_option('show_on_front', 'page');
         update_option('page_on_front', (int) $page->ID);
 
-        return $this->success([
-            'page_id' => (int) $page->ID,
-            'page_title' => $page->post_title,
-            'page_status' => $page->post_status,
-            'page_url' => get_permalink($page->ID),
-            'is_homepage' => true,
-        ]);
+        $fresh_page = get_post((int) $page->ID);
+        if (! $fresh_page instanceof WP_Post) {
+            return $this->error('server_error', __('The homepage was updated but the page could not be reloaded.', 'vibepresto'), 500);
+        }
+
+        return $this->success($this->page_payload($fresh_page));
     }
 
     public function rollback_page_bundle(WP_REST_Request $request): WP_REST_Response
