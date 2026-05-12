@@ -1,35 +1,20 @@
 # VibePresto
 
-WordPress plugin for creating and managing pages, uploading versioned static bundles, and assigning them as full-page takeovers or multi-route deployments.
+WordPress plugin for uploading versioned static site bundles and serving them as page takeovers or multi-route deployments.
 
-## What it is
+## Overview
 
-VibePresto turns WordPress into a destination for static landing pages and other takeover-style experiences.
+VibePresto turns WordPress into a destination for static landing pages, campaign pages, and exported frontend experiences.
 
 Instead of rebuilding a page inside the WordPress editor, you can:
 
-- create or manage a WordPress page
+- create or manage WordPress pages
 - upload a static HTML/CSS/JS bundle
-- assign that bundle to a page or deployment
-- keep version history for later updates and rollback
-- store route manifests and deployment mappings for multi-page static exports
+- assign that bundle to a single page or a multi-page deployment
+- keep version history for updates and rollback
+- map exported routes from a static frontend build onto WordPress pages
 
 When a page has an assigned VibePresto bundle, visitors see the uploaded bundle instead of the normal WordPress theme output for that page.
-
-## Recommended setup
-
-VibePresto works best when used together with:
-
-- the published CLI: `npx vibepresto`
-- the VibePresto Codex skill in this monorepo
-
-The recommended workflow is:
-
-1. Install and activate the WordPress plugin on the target site.
-2. Install or configure the VibePresto skill so your agent knows to use the CLI surface.
-3. Use `npx vibepresto` to log in, create/search pages, upload bundles, assign them, and roll back versions.
-
-If you are using Codex locally, point it at the skill in [`../skill`](../skill) so it prefers the CLI flow instead of browser automation.
 
 ## Core capabilities
 
@@ -42,38 +27,53 @@ If you are using Codex locally, point it at the skill in [`../skill`](../skill) 
 - front-end takeover rendering
 - device-style CLI authorization support
 
-## How the CLI works
+## Recommended workflow
 
-After the plugin is installed on a WordPress site, the normal CLI flow is:
+VibePresto works best together with:
+
+- the published CLI: `npx vibepresto`
+- the VibePresto Codex skill
+
+Typical flow:
+
+1. Install and activate the plugin on the target WordPress site.
+2. Use `npx vibepresto login --site https://your-site.example`.
+3. Create, search, or manage pages through the CLI.
+4. Upload a single bundle or deploy a multi-route static build.
+5. Promote, inspect, or roll back bundle and deployment history when needed.
+
+## Example CLI flow
+
+Single-page upload:
 
 ```bash
 npx vibepresto login --site https://your-site.example
-npx vibepresto pages list --site https://your-site.example --json
+npx vibepresto pages create --site https://your-site.example --title "Landing Page" --status draft --json
 npx vibepresto upload --site https://your-site.example --site-dir ./landing-page --page-id 123 --json
+npx vibepresto pages set-status --site https://your-site.example --page-id 123 --status publish --json
 ```
 
-Useful commands:
-
-- `npx vibepresto whoami --site <site> --json`
-- `npx vibepresto pages create --site <site> --title "Landing Page" --status draft --json`
-- `npx vibepresto pages set-status --site <site> --page-id <id> --status publish --json`
-- `npx vibepresto pages set-homepage --site <site> --page-id <id> --json`
-- `npx vibepresto bundles list --site <site> --json`
-- `npx vibepresto bundles versions --site <site> --bundle-id <id> --json`
-- `npx vibepresto bundles rollback --site <site> --page-id <id> --version <n> --json`
-
-Important behavior:
-
-- if you upload to a page that already has an assigned bundle, VibePresto creates a new version in the same bundle lineage
-- older versions stay available for inspection and rollback
-- the CLI is the preferred automation surface for agents and scripted workflows
-
-## Install on hosted WordPress
-
-Build the uploadable plugin zip from this repo:
+Framework-aware multi-route deployment:
 
 ```bash
-cd vibepresto
+npx vibepresto login --site https://your-site.example
+npx vibepresto build --project-dir ./my-app --json
+npx vibepresto routes inspect --output-dir ./my-app/dist --json
+npx vibepresto deploy --site https://your-site.example --output-dir ./my-app/dist --create-missing-pages --json
+```
+
+## Important behavior
+
+- If you upload to a page that already has an assigned bundle, VibePresto creates a new version in the same bundle lineage.
+- Older versions remain available for inspection and rollback.
+- Multi-page deployments are driven by route manifests and page mappings.
+- The plugin stores and serves static artifacts only. It does not run Node, SSR, or application servers inside WordPress.
+
+## Install on WordPress
+
+Build the plugin zip:
+
+```bash
 ./scripts/package-release.sh
 ```
 
@@ -86,66 +86,23 @@ That produces:
 Then in WordPress admin:
 
 1. Go to `Plugins > Add New Plugin > Upload Plugin`
-2. Upload the generated `vibepresto-<version>.zip`
+2. Upload `vibepresto-<version>.zip`
 3. Activate `VibePresto`
 4. Open the `VibePresto` admin menu
 5. Approve CLI logins from the built-in authorization page when `npx vibepresto login` is used
 
-## GitHub releases
+## Release packaging
 
-This repo is already set up to produce a release asset with:
+To produce a release asset:
 
 ```bash
-cd vibepresto
 ./scripts/package-release.sh
 ```
 
 Recommended release sequence:
 
 1. Update the version in [`vibepresto.php`](./vibepresto.php)
-2. Update [`readme.txt`](./readme.txt) changelog if needed
+2. Update [`readme.txt`](./readme.txt) if needed
 3. Rebuild the zip with `./scripts/package-release.sh`
-4. Commit and tag the release, for example `v0.1.0`
-5. Push the commit and tag to `origin`
-6. Create a GitHub Release in `VibePresto/vibepresto`
-7. Upload `releases/vibepresto-<version>.zip` as the release asset
-
-Example git flow:
-
-```bash
-cd vibepresto
-git status
-git add .
-git commit -m "Release v0.1.0"
-git tag v0.1.0
-git push origin main
-git push origin v0.1.0
-```
-
-Then create the GitHub Release from the tag and attach the zip file.
-
-## Local development
-
-This plugin is intended to be mounted into the private `vibepresto/dev` Docker environment for live editing.
-
-Recommended sibling layout:
-
-```text
-~/Development/Playground/
-  vibepresto/
-  cli/
-  skill/
-  dev/
-```
-
-Inside the `dev` repo, set:
-
-```bash
-VIBEPRESTO_PLUGIN_DIR=../vibepresto
-```
-
-Then start the stack from `dev` with:
-
-```bash
-make install
-```
+4. Create a Git tag and GitHub release
+5. Upload `vibepresto-<version>.zip` as the release asset
