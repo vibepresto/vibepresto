@@ -1,6 +1,6 @@
 # VibePresto
 
-WordPress plugin for creating and managing pages, uploading versioned static HTML/CSS/JS bundles, and assigning them as full-page takeovers.
+WordPress plugin for creating and managing pages, uploading versioned static bundles, and assigning them as full-page takeovers or multi-route deployments.
 
 ## What it is
 
@@ -10,8 +10,9 @@ Instead of rebuilding a page inside the WordPress editor, you can:
 
 - create or manage a WordPress page
 - upload a static HTML/CSS/JS bundle
-- assign that bundle to the page
+- assign that bundle to a page or deployment
 - keep version history for later updates and rollback
+- store route manifests and deployment mappings for multi-page static exports
 
 When a page has an assigned VibePresto bundle, visitors see the uploaded bundle instead of the normal WordPress theme output for that page.
 
@@ -34,8 +35,9 @@ If you are using Codex locally, point it at the skill in [`../skill`](../skill) 
 
 - bundle upload and storage
 - bundle lineage versioning and rollback
+- multi-route deployment records
 - page creation and lifecycle management
-- page assignment
+- page assignment and mixed-mode deployment mapping
 - homepage assignment
 - front-end takeover rendering
 - device-style CLI authorization support

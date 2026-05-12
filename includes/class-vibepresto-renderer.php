@@ -41,7 +41,11 @@ class Renderer
             return;
         }
 
-        $entry_path = wp_normalize_path(trailingslashit($bundle['storage_path']) . $bundle['entry_html']);
+        $target = $this->bundles->deployment_target_for_page((int) $page->ID, $bundle);
+        $entry_html = is_array($target) && ! empty($target['entry_html'])
+            ? (string) $target['entry_html']
+            : (string) $bundle['entry_html'];
+        $entry_path = wp_normalize_path(trailingslashit($bundle['storage_path']) . $entry_html);
         if (! file_exists($entry_path)) {
             return;
         }
@@ -51,7 +55,7 @@ class Renderer
             return;
         }
 
-        $html = $this->rewrite_relative_urls($html, $bundle);
+        $html = $this->rewrite_relative_urls($html, $bundle, $entry_html);
 
         if ($bundle['mode'] === 'separate') {
             $html = $this->inject_optional_assets($html, $bundle);
@@ -64,13 +68,13 @@ class Renderer
         exit;
     }
 
-    private function rewrite_relative_urls(string $html, array $bundle): string
+    private function rewrite_relative_urls(string $html, array $bundle, string $entry_html): string
     {
         if (! class_exists('\DOMDocument')) {
             return $html;
         }
 
-        $base_url = $this->bundle_base_url($bundle);
+        $base_url = $this->bundle_base_url($bundle, $entry_html);
 
         $internal_errors = libxml_use_internal_errors(true);
         $document = new \DOMDocument();
@@ -147,9 +151,9 @@ class Renderer
         return ! preg_match('#^(?:[a-z][a-z0-9+.-]*:|//|/)#i', $url);
     }
 
-    private function bundle_base_url(array $bundle): string
+    private function bundle_base_url(array $bundle, string $entry_html): string
     {
-        $directory = trim((string) dirname($bundle['entry_html']), '.');
+        $directory = trim((string) dirname($entry_html), '.');
         if ($directory === '' || $directory === DIRECTORY_SEPARATOR) {
             return trailingslashit($bundle['storage_url']);
         }

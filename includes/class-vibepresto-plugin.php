@@ -46,12 +46,14 @@ class Plugin
         register_activation_hook(VIBEPRESTO_PLUGIN_FILE, [$this, 'activate']);
 
         add_action('init', [$this, 'register_bundle_post_type']);
+        add_action('init', [$this, 'register_deployment_post_type']);
         add_action('plugins_loaded', [$this, 'boot']);
     }
 
     public function activate(): void
     {
         $this->register_bundle_post_type();
+        $this->register_deployment_post_type();
         flush_rewrite_rules();
     }
 
@@ -61,6 +63,22 @@ class Plugin
             'labels' => [
                 'name' => __('VibePresto Bundles', 'vibepresto'),
                 'singular_name' => __('VibePresto Bundle', 'vibepresto'),
+            ],
+            'public' => false,
+            'show_ui' => false,
+            'show_in_menu' => false,
+            'supports' => ['title'],
+            'capability_type' => 'post',
+            'map_meta_cap' => true,
+        ]);
+    }
+
+    public function register_deployment_post_type(): void
+    {
+        register_post_type('vibepresto_deploy', [
+            'labels' => [
+                'name' => __('VibePresto Deployments', 'vibepresto'),
+                'singular_name' => __('VibePresto Deployment', 'vibepresto'),
             ],
             'public' => false,
             'show_ui' => false,
