@@ -96,5 +96,30 @@ class Plugin
         $this->admin->register();
         $this->api->register();
         $this->renderer->register();
+
+        do_action('vibepresto_services_ready', $this->services(), $this);
+    }
+
+    public function get_auth_store(): Auth_Store
+    {
+        return $this->auth;
+    }
+
+    public function get_bundle_repository(): Bundle_Repository
+    {
+        return $this->bundles;
+    }
+
+    public function services(): array
+    {
+        return [
+            'auth' => $this->auth,
+            'bundles' => $this->bundles,
+            'site' => [
+                'site_url' => home_url('/'),
+                'plugin_version' => VIBEPRESTO_VERSION,
+                'can_manage_options' => current_user_can('manage_options'),
+            ],
+        ];
     }
 }
