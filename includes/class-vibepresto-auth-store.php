@@ -16,11 +16,45 @@ class Auth_Store
     private const ACCESS_TTL = 900;
     private const REFRESH_TTL = 2592000;
     private const POLL_INTERVAL = 5;
+    private const DEVICE_REQUEST_WINDOW = 300;
+    private const MAX_DEVICE_REQUESTS_PER_IP = 5;
+    private const MAX_ACTIVE_DEVICES = 100;
+    private const MAX_ACTIVE_DEVICES_PER_IP = 5;
+    private const PENDING_DEVICE_PRUNE_THRESHOLD = 75;
 
-    public function create_device_authorization(string $client_name, string $machine_name, array $scope = []): array
+    public function create_device_authorization(string $client_name, string $machine_name, array $scope = [], string $request_ip = '')
     {
         $state = $this->load_state();
         $now = time();
+        $request_ip = $this->normalize_request_ip($request_ip);
+
+        $state = $this->cleanup_state($state, $now);
+        $this->prune_oldest_pending_devices($state, self::PENDING_DEVICE_PRUNE_THRESHOLD);
+
+        $recent_requests = $this->recent_request_timestamps($state['request_log'][$request_ip] ?? [], $now);
+        if (count($recent_requests) >= self::MAX_DEVICE_REQUESTS_PER_IP) {
+            return new WP_Error('rate_limited', __('Too many device authorization requests were made from this IP. Please wait and try again.', 'vibepresto'), [
+                'retry_after' => self::DEVICE_REQUEST_WINDOW,
+            ]);
+        }
+
+        $active_devices = $this->active_device_requests($state['devices']);
+        if (count($active_devices) >= self::MAX_ACTIVE_DEVICES) {
+            return new WP_Error('device_request_limit_reached', __('Too many pending CLI authorization requests already exist. Please wait and try again.', 'vibepresto'));
+        }
+
+        $active_devices_for_ip = 0;
+        foreach ($active_devices as $device) {
+            if (($device['request_ip'] ?? '') === $request_ip) {
+                $active_devices_for_ip++;
+            }
+        }
+
+        if ($active_devices_for_ip >= self::MAX_ACTIVE_DEVICES_PER_IP) {
+            return new WP_Error('rate_limited', __('This IP already has too many active CLI authorization requests. Please finish an existing approval or wait for it to expire.', 'vibepresto'), [
+                'retry_after' => self::DEVICE_TTL,
+            ]);
+        }
 
         $device_code = bin2hex(random_bytes(24));
         $user_code = $this->generate_user_code();
@@ -43,7 +77,11 @@ class Auth_Store
             'completion_code' => '',
             'completion_expires_at' => 0,
             'exchanged_at' => 0,
+            'request_ip' => $request_ip,
         ];
+        $recent_requests[] = $now;
+        $state['request_log'][$request_ip] = $recent_requests;
+        $this->prune_oldest_pending_devices($state, self::PENDING_DEVICE_PRUNE_THRESHOLD, $device_code);
 
         $this->save_state($state);
 
@@ -264,27 +302,7 @@ class Auth_Store
 
     public function cleanup_expired(): void
     {
-        $state = $this->load_state();
-        $now = time();
-
-        foreach ($state['devices'] as $device_code => $device) {
-            $device_expired = ($device['expires_at'] ?? 0) < ($now - self::COMPLETION_TTL);
-            $completed_old = ($device['status'] ?? '') === 'completed' && ($device['exchanged_at'] ?? 0) < ($now - self::COMPLETION_TTL);
-            $denied_old = ($device['status'] ?? '') === 'denied' && ($device['denied_at'] ?? 0) < ($now - self::COMPLETION_TTL);
-
-            if ($device_expired || $completed_old || $denied_old) {
-                unset($state['devices'][$device_code]);
-            }
-        }
-
-        foreach ($state['sessions'] as $session_id => $session) {
-            $refresh_expired = ($session['refresh_expires_at'] ?? 0) < $now;
-            $revoked_old = ! empty($session['revoked_at']) && $session['revoked_at'] < ($now - self::COMPLETION_TTL);
-            if ($refresh_expired || $revoked_old) {
-                unset($state['sessions'][$session_id]);
-            }
-        }
-
+        $state = $this->cleanup_state($this->load_state(), time());
         $this->save_state($state);
     }
 
@@ -338,6 +356,7 @@ class Auth_Store
         $state = get_option(self::OPTION_KEY, [
             'devices' => [],
             'sessions' => [],
+            'request_log' => [],
         ]);
 
         if (! is_array($state)) {
@@ -346,6 +365,7 @@ class Auth_Store
 
         $state['devices'] = is_array($state['devices'] ?? null) ? $state['devices'] : [];
         $state['sessions'] = is_array($state['sessions'] ?? null) ? $state['sessions'] : [];
+        $state['request_log'] = is_array($state['request_log'] ?? null) ? $state['request_log'] : [];
 
         return $state;
     }
@@ -404,5 +424,105 @@ class Auth_Store
     private function token_hash(string $token): string
     {
         return hash_hmac('sha256', $token, wp_salt('auth'));
+    }
+
+    private function cleanup_state(array $state, int $now): array
+    {
+        foreach ($state['devices'] as $device_code => $device) {
+            $device_expired = ($device['expires_at'] ?? 0) < ($now - self::COMPLETION_TTL);
+            $completed_old = ($device['status'] ?? '') === 'completed' && ($device['exchanged_at'] ?? 0) < ($now - self::COMPLETION_TTL);
+            $denied_old = ($device['status'] ?? '') === 'denied' && ($device['denied_at'] ?? 0) < ($now - self::COMPLETION_TTL);
+
+            if ($device_expired || $completed_old || $denied_old) {
+                unset($state['devices'][$device_code]);
+            }
+        }
+
+        foreach ($state['sessions'] as $session_id => $session) {
+            $refresh_expired = ($session['refresh_expires_at'] ?? 0) < $now;
+            $revoked_old = ! empty($session['revoked_at']) && $session['revoked_at'] < ($now - self::COMPLETION_TTL);
+            if ($refresh_expired || $revoked_old) {
+                unset($state['sessions'][$session_id]);
+            }
+        }
+
+        foreach ($state['request_log'] as $request_ip => $timestamps) {
+            $recent = $this->recent_request_timestamps(is_array($timestamps) ? $timestamps : [], $now);
+            if ($recent) {
+                $state['request_log'][$request_ip] = $recent;
+                continue;
+            }
+
+            unset($state['request_log'][$request_ip]);
+        }
+
+        return $state;
+    }
+
+    private function recent_request_timestamps(array $timestamps, int $now): array
+    {
+        $threshold = $now - self::DEVICE_REQUEST_WINDOW;
+
+        return array_values(array_filter($timestamps, static function ($timestamp) use ($threshold): bool {
+            return is_numeric($timestamp) && (int) $timestamp >= $threshold;
+        }));
+    }
+
+    private function active_device_requests(array $devices): array
+    {
+        $active = [];
+
+        foreach ($devices as $device) {
+            if (! is_array($device)) {
+                continue;
+            }
+
+            if ($this->is_active_device($device)) {
+                $active[] = $device;
+            }
+        }
+
+        return $active;
+    }
+
+    private function is_active_device(array $device): bool
+    {
+        return in_array($device['status'] ?? '', ['pending', 'approved'], true);
+    }
+
+    private function prune_oldest_pending_devices(array &$state, int $threshold, string $protected_device_code = ''): void
+    {
+        $pending = [];
+
+        foreach ($state['devices'] as $device_code => $device) {
+            if (! is_array($device) || ($device['status'] ?? '') !== 'pending' || $device_code === $protected_device_code) {
+                continue;
+            }
+
+            $pending[$device_code] = (int) ($device['created_at'] ?? 0);
+        }
+
+        if (count($pending) <= $threshold) {
+            return;
+        }
+
+        asort($pending, SORT_NUMERIC);
+        $removeCount = count($pending) - $threshold;
+        $deviceCodes = array_slice(array_keys($pending), 0, $removeCount);
+
+        foreach ($deviceCodes as $deviceCode) {
+            unset($state['devices'][$deviceCode]);
+        }
+    }
+
+    private function normalize_request_ip(string $request_ip): string
+    {
+        $request_ip = trim($request_ip);
+
+        if ($request_ip === '' || strlen($request_ip) > 64) {
+            return 'unknown';
+        }
+
+        return $request_ip;
     }
 }

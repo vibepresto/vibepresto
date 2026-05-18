@@ -43,6 +43,7 @@ Typical flow:
 
 1. Install and activate the plugin on the target WordPress site.
 2. Use `npx vibepresto login --site https://your-site.example`.
+   The public device-auth bootstrap endpoint is rate-limited and capped to reduce abuse.
 3. Optionally create `.vibepresto/config.json` with `npx vibepresto init` to save project and environment defaults.
 4. Create, search, or manage pages through the CLI.
 5. Upload a single bundle or deploy a multi-route static build.

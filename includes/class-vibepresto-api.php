@@ -204,7 +204,11 @@ class API
             $scope = ['bundles:write', 'pages:read', 'pages:write', 'pages:assign', 'site:write'];
         }
 
-        $device = $this->auth->create_device_authorization($client_name, $machine_name, $scope);
+        $device = $this->auth->create_device_authorization($client_name, $machine_name, $scope, $this->request_ip());
+        if (is_wp_error($device)) {
+            return $this->from_error($device);
+        }
+
         $verification_url = admin_url('admin.php?page=vibepresto-authorize&device_code=' . rawurlencode($device['device_code']) . '&user_code=' . rawurlencode($device['user_code']));
 
         return $this->success([
@@ -1455,14 +1459,21 @@ class API
         $code = $error->get_error_code();
         $message = $error->get_error_message();
         $status = $status ?? $this->status_from_error_code($code);
+        $details = $error->get_error_data();
+        $details = is_array($details) ? $details : [];
+        unset($details['status']);
 
-        return $this->error($code, $message, $status);
+        return $this->error($code, $message, $status, $details);
     }
 
     private function status_from_error_code(string $code): int
     {
         if (in_array($code, ['authorization_pending', 'slow_down', 'invalid_request', 'validation_error', 'invalid_route_manifest'], true)) {
             return 400;
+        }
+
+        if (in_array($code, ['rate_limited', 'device_request_limit_reached'], true)) {
+            return 429;
         }
 
         if (in_array($code, ['invalid_token', 'invalid_grant', 'expired_token', 'access_denied'], true)) {
@@ -1478,5 +1489,26 @@ class API
         }
 
         return 500;
+    }
+
+    private function request_ip(): string
+    {
+        $candidates = [
+            isset($_SERVER['HTTP_X_FORWARDED_FOR']) ? (string) $_SERVER['HTTP_X_FORWARDED_FOR'] : '',
+            isset($_SERVER['REMOTE_ADDR']) ? (string) $_SERVER['REMOTE_ADDR'] : '',
+        ];
+
+        foreach ($candidates as $candidate) {
+            if ($candidate === '') {
+                continue;
+            }
+
+            $first = trim(explode(',', $candidate)[0]);
+            if ($first !== '') {
+                return sanitize_text_field($first);
+            }
+        }
+
+        return '';
     }
 }
