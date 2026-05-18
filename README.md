@@ -43,9 +43,10 @@ Typical flow:
 
 1. Install and activate the plugin on the target WordPress site.
 2. Use `npx vibepresto login --site https://your-site.example`.
-3. Create, search, or manage pages through the CLI.
-4. Upload a single bundle or deploy a multi-route static build.
-5. Promote, inspect, or roll back bundle and deployment history when needed.
+3. Optionally create `.vibepresto/config.json` with `npx vibepresto init` to save project and environment defaults.
+4. Create, search, or manage pages through the CLI.
+5. Upload a single bundle or deploy a multi-route static build.
+6. Promote, inspect, or roll back bundle and deployment history when needed.
 
 ## Example CLI flow
 
@@ -62,9 +63,10 @@ Framework-aware multi-route deployment:
 
 ```bash
 npx vibepresto login --site https://your-site.example
+npx vibepresto init --project-dir ./my-app --output-dir ./my-app/dist --site https://your-site.example --env production --json
 npx vibepresto build --project-dir ./my-app --json
 npx vibepresto routes inspect --output-dir ./my-app/dist --json
-npx vibepresto deploy --site https://your-site.example --output-dir ./my-app/dist --create-missing-pages --json
+npx vibepresto deploy --env production --output-dir ./my-app/dist --create-missing-pages --json
 ```
 
 ## Important behavior
@@ -72,6 +74,7 @@ npx vibepresto deploy --site https://your-site.example --output-dir ./my-app/dis
 - If you upload to a page that already has an assigned bundle, VibePresto creates a new version in the same bundle lineage.
 - Older versions remain available for inspection and rollback.
 - Multi-page deployments are driven by route manifests and page mappings.
+- The optional CLI project config at `.vibepresto/config.json` is resolved by the CLI and attached as normalized build metadata when used; the plugin does not parse the raw config file directly.
 - The plugin stores and serves static artifacts only. It does not run Node, SSR, or application servers inside WordPress.
 - Placeholder rendering resolves values from the current queried `WP_Post` object used for the takeover request.
 - The configured `Posts page` can also use a VibePresto bundle and placeholder rendering.
