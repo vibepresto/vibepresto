@@ -108,6 +108,30 @@ class API
             'permission_callback' => '__return_true',
         ]);
 
+        register_rest_route('vibepresto/v1', '/posts', [
+            'methods' => 'GET',
+            'callback' => [$this, 'list_posts'],
+            'permission_callback' => '__return_true',
+        ]);
+
+        register_rest_route('vibepresto/v1', '/posts/(?P<id>\d+)/status', [
+            'methods' => 'POST',
+            'callback' => [$this, 'update_post_status'],
+            'permission_callback' => '__return_true',
+        ]);
+
+        register_rest_route('vibepresto/v1', '/posts/(?P<id>\d+)/bundle-rollback', [
+            'methods' => 'POST',
+            'callback' => [$this, 'rollback_post_bundle'],
+            'permission_callback' => '__return_true',
+        ]);
+
+        register_rest_route('vibepresto/v1', '/posts/default-template', [
+            'methods' => 'POST',
+            'callback' => [$this, 'set_default_single_post_template'],
+            'permission_callback' => '__return_true',
+        ]);
+
         register_rest_route('vibepresto/v1', '/bundles', [
             'methods' => 'GET',
             'callback' => [$this, 'list_bundles'],
@@ -344,6 +368,37 @@ class API
         }
 
         return $this->success($this->page_payload($page), 201);
+    }
+
+    public function list_posts(WP_REST_Request $request): WP_REST_Response
+    {
+        $auth = $this->require_bearer_auth($request);
+        if (is_wp_error($auth)) {
+            return $this->from_error($auth);
+        }
+
+        $query = sanitize_text_field((string) $request->get_param('q'));
+        $status = sanitize_key((string) $request->get_param('status'));
+        $allowed_statuses = ['publish', 'draft', 'pending', 'private', 'future'];
+        $post_status = in_array($status, $allowed_statuses, true)
+            ? [$status]
+            : ['publish', 'draft', 'pending', 'private', 'future'];
+
+        $posts = get_posts([
+            'post_type' => 'post',
+            'post_status' => $post_status,
+            'posts_per_page' => -1,
+            's' => $query,
+            'orderby' => 'date',
+            'order' => 'DESC',
+        ]);
+
+        $items = array_map([$this, 'post_list_payload'], $posts);
+
+        return $this->success([
+            'items' => $items,
+            'total' => count($items),
+        ]);
     }
 
     public function batch_resolve_pages(WP_REST_Request $request): WP_REST_Response
@@ -632,6 +687,137 @@ class API
         return $this->success($this->bundle_version_payload($promoted, (int) $page->ID));
     }
 
+    public function update_post_status(WP_REST_Request $request): WP_REST_Response
+    {
+        $auth = $this->require_bearer_auth($request);
+        if (is_wp_error($auth)) {
+            return $this->from_error($auth);
+        }
+
+        if (! current_user_can('manage_options')) {
+            return $this->error('forbidden', __('Only administrators can update post status.', 'vibepresto'), 403);
+        }
+
+        $post = $this->post_from_request($request);
+        if (is_wp_error($post)) {
+            return $this->from_error($post, 404);
+        }
+
+        $status = sanitize_key((string) $request->get_param('status'));
+        $allowed_statuses = ['publish', 'draft', 'pending', 'private'];
+        if (! in_array($status, $allowed_statuses, true)) {
+            return $this->error('invalid_request', __('Choose a valid post status.', 'vibepresto'), 400);
+        }
+
+        $updated = wp_update_post([
+            'ID' => (int) $post->ID,
+            'post_status' => $status,
+        ], true);
+
+        if (is_wp_error($updated)) {
+            return $this->from_error($updated, 400);
+        }
+
+        $fresh_post = get_post((int) $post->ID);
+        if (! $fresh_post instanceof WP_Post) {
+            return $this->error('server_error', __('The post status was updated but could not be reloaded.', 'vibepresto'), 500);
+        }
+
+        return $this->success($this->post_payload($fresh_post));
+    }
+
+    public function rollback_post_bundle(WP_REST_Request $request): WP_REST_Response
+    {
+        $auth = $this->require_bearer_auth($request);
+        if (is_wp_error($auth)) {
+            return $this->from_error($auth);
+        }
+
+        if (! current_user_can('manage_options')) {
+            return $this->error('forbidden', __('Only administrators can roll back bundle versions.', 'vibepresto'), 403);
+        }
+
+        $post = $this->post_from_request($request);
+        if (is_wp_error($post)) {
+            return $this->from_error($post, 404);
+        }
+
+        $bundle_version_id = absint((string) ($request->get_param('bundle_version_id') ?: 0));
+        $version_number = absint((string) ($request->get_param('version_number') ?: 0));
+        $assigned_bundle_id = $this->bundles->get_assigned_bundle_id((int) $post->ID);
+        if ($assigned_bundle_id < 1) {
+            return $this->error('invalid_request', __('That post does not currently have an assigned bundle.', 'vibepresto'), 400);
+        }
+
+        $assigned_lineage_id = $this->bundles->resolve_lineage_id($assigned_bundle_id);
+
+        $target = null;
+        if ($bundle_version_id > 0) {
+            $target = $this->bundles->find($bundle_version_id);
+        } elseif ($version_number > 0) {
+            $target = $this->bundles->find_version_by_number($assigned_lineage_id, $version_number);
+        } else {
+            return $this->error('invalid_request', __('Provide either a bundle version id or version number.', 'vibepresto'), 400);
+        }
+
+        if (! $target) {
+            return $this->error('not_found', __('The requested bundle version could not be found.', 'vibepresto'), 404);
+        }
+
+        if ((int) $target['lineage_id'] !== $assigned_lineage_id) {
+            return $this->error('invalid_request', __('You can only roll back to a version in the post\'s current bundle lineage.', 'vibepresto'), 400);
+        }
+
+        $promoted = $this->bundles->promote_version((int) $target['id'], (int) $post->ID);
+        if (is_wp_error($promoted)) {
+            return $this->from_error($promoted);
+        }
+
+        return $this->success($this->bundle_version_payload($promoted, 0, (int) $post->ID));
+    }
+
+    public function set_default_single_post_template(WP_REST_Request $request): WP_REST_Response
+    {
+        $auth = $this->require_bearer_auth($request);
+        if (is_wp_error($auth)) {
+            return $this->from_error($auth);
+        }
+
+        if (! current_user_can('manage_options')) {
+            return $this->error('forbidden', __('Only administrators can manage the default single post template.', 'vibepresto'), 403);
+        }
+
+        $lineage_id = absint((string) ($request->get_param('lineage_id') ?: 0));
+        $bundle_version_id = absint((string) ($request->get_param('bundle_version_id') ?: 0));
+
+        if ($lineage_id < 1 && $bundle_version_id < 1) {
+            return $this->error('invalid_request', __('Provide either a lineage id or bundle version id.', 'vibepresto'), 400);
+        }
+
+        if ($bundle_version_id > 0) {
+            $bundle = $this->bundles->find($bundle_version_id);
+            if (! $bundle) {
+                return $this->error('not_found', __('The requested bundle version could not be found.', 'vibepresto'), 404);
+            }
+
+            $lineage_id = (int) $bundle['lineage_id'];
+        }
+
+        $current_bundle = $this->bundles->get_current_version_for_lineage($lineage_id);
+        if (! $current_bundle) {
+            return $this->error('not_found', __('The requested bundle lineage could not be found.', 'vibepresto'), 404);
+        }
+
+        $this->bundles->set_default_single_post_template_lineage_id($lineage_id);
+
+        return $this->success([
+            'default_single_post_template_lineage_id' => $lineage_id,
+            'bundle_version_id' => (int) $current_bundle['id'],
+            'bundle_version_label' => (string) $current_bundle['version_label'],
+            'bundle_title' => (string) $current_bundle['lineage_name'],
+        ]);
+    }
+
     public function list_bundles(WP_REST_Request $request): WP_REST_Response
     {
         $auth = $this->require_bearer_auth($request);
@@ -732,13 +918,25 @@ class API
         $mode = sanitize_key((string) $request->get_param('mode'));
         $display_name = sanitize_text_field((string) $request->get_param('display_name'));
         $assign_page_id = absint((string) ($request->get_param('assign_page_id') ?: 0));
+        $assign_post_id = absint((string) ($request->get_param('assign_post_id') ?: 0));
         $lineage_id = absint((string) ($request->get_param('lineage_id') ?: 0));
         $bundle_kind = sanitize_key((string) ($request->get_param('bundle_kind') ?: ''));
         $route_manifest = $this->json_array_param($request, 'route_manifest');
         $build_metadata = $this->json_array_param($request, 'build_metadata');
 
+        if ($assign_page_id > 0 && $assign_post_id > 0) {
+            return $this->error('invalid_request', __('Choose either a page target or post target, not both.', 'vibepresto'), 400);
+        }
+
         if ($assign_page_id > 0 && $lineage_id < 1) {
             $existing_bundle_id = $this->bundles->get_assigned_bundle_id($assign_page_id);
+            if ($existing_bundle_id > 0) {
+                $lineage_id = $this->bundles->resolve_lineage_id($existing_bundle_id);
+            }
+        }
+
+        if ($assign_post_id > 0 && $lineage_id < 1) {
+            $existing_bundle_id = $this->bundles->get_assigned_bundle_id($assign_post_id);
             if ($existing_bundle_id > 0) {
                 $lineage_id = $this->bundles->resolve_lineage_id($existing_bundle_id);
             }
@@ -781,6 +979,8 @@ class API
 
         $assigned_page_id = null;
         $assigned_page_url = null;
+        $assigned_post_id = null;
+        $assigned_post_url = null;
         $deployment_id = 0;
         if ($assign_page_id > 0) {
             $page = get_post($assign_page_id);
@@ -796,6 +996,15 @@ class API
 
             $assigned_page_id = $assign_page_id;
             $assigned_page_url = get_permalink($assign_page_id);
+        } elseif ($assign_post_id > 0) {
+            $post = get_post($assign_post_id);
+            if (! $post instanceof WP_Post || $post->post_type !== 'post') {
+                return $this->error('invalid_request', __('The requested post could not be found.', 'vibepresto'), 400);
+            }
+
+            $this->bundles->assign_to_page($assign_post_id, (int) $bundle_id);
+            $assigned_post_id = $assign_post_id;
+            $assigned_post_url = get_permalink($assign_post_id);
         }
 
         $bundle = $this->bundles->find((int) $bundle_id);
@@ -817,6 +1026,8 @@ class API
             'deployment_id' => $deployment_id ?: ($bundle['deployment_id'] ?? 0),
             'assigned_page_id' => $assigned_page_id,
             'assigned_page_url' => $assigned_page_url,
+            'assigned_post_id' => $assigned_post_id,
+            'assigned_post_url' => $assigned_post_url,
         ], 201);
     }
 
@@ -939,6 +1150,14 @@ class API
     private function require_bearer_auth(WP_REST_Request $request)
     {
         $header = $request->get_header('authorization');
+        if (! is_string($header) || trim($header) === '') {
+            $header = isset($_SERVER['HTTP_AUTHORIZATION']) ? (string) $_SERVER['HTTP_AUTHORIZATION'] : '';
+        }
+
+        if ((! is_string($header) || trim($header) === '') && isset($_SERVER['REDIRECT_HTTP_AUTHORIZATION'])) {
+            $header = (string) $_SERVER['REDIRECT_HTTP_AUTHORIZATION'];
+        }
+
         if (! is_string($header) || ! preg_match('/Bearer\s+(.+)/i', $header, $matches)) {
             return new WP_Error('invalid_token', __('A bearer token is required.', 'vibepresto'));
         }
@@ -966,6 +1185,21 @@ class API
         }
 
         return $page;
+    }
+
+    private function post_from_request(WP_REST_Request $request)
+    {
+        $post_id = absint((string) $request->get_param('id'));
+        if ($post_id < 1) {
+            return new WP_Error('not_found', __('The requested post could not be found.', 'vibepresto'));
+        }
+
+        $post = get_post($post_id);
+        if (! $post instanceof WP_Post || $post->post_type !== 'post') {
+            return new WP_Error('not_found', __('The requested post could not be found.', 'vibepresto'));
+        }
+
+        return $post;
     }
 
     private function page_list_payload(WP_Post $page): array
@@ -1008,7 +1242,48 @@ class API
         ];
     }
 
-    private function bundle_version_payload(array $bundle, int $page_id = 0): array
+    private function post_list_payload(WP_Post $post): array
+    {
+        $default_template = $this->bundles->get_default_single_post_template_bundle();
+        $assigned_bundle = $this->bundles->get_assigned_bundle_id((int) $post->ID);
+
+        return [
+            'id' => (int) $post->ID,
+            'title' => $post->post_title,
+            'slug' => $post->post_name,
+            'status' => $post->post_status,
+            'url' => get_permalink($post->ID),
+            'assigned_bundle_id' => $assigned_bundle,
+            'assigned_deployment_id' => $this->bundles->get_assigned_deployment_id((int) $post->ID),
+            'uses_default_single_post_template' => $assigned_bundle < 1 && $default_template !== null,
+        ];
+    }
+
+    private function post_payload(WP_Post $post): array
+    {
+        $post_id = (int) $post->ID;
+        $assigned_bundle_id = $this->bundles->get_assigned_bundle_id($post_id);
+        $assigned_bundle = $assigned_bundle_id > 0 ? $this->bundles->find($assigned_bundle_id) : null;
+        $assigned_deployment_id = $this->bundles->get_assigned_deployment_id($post_id);
+        $default_template = $this->bundles->get_default_single_post_template_bundle();
+
+        return [
+            'post_id' => $post_id,
+            'post_title' => $post->post_title,
+            'post_slug' => $post->post_name,
+            'post_status' => $post->post_status,
+            'post_url' => get_permalink($post_id),
+            'assigned_bundle_id' => $assigned_bundle_id,
+            'assigned_bundle_title' => $assigned_bundle['lineage_name'] ?? '',
+            'assigned_bundle_version_id' => $assigned_bundle['id'] ?? 0,
+            'assigned_bundle_version_number' => $assigned_bundle['version_number'] ?? 0,
+            'assigned_deployment_id' => $assigned_deployment_id,
+            'default_single_post_template_lineage_id' => $this->bundles->get_default_single_post_template_lineage_id(),
+            'uses_default_single_post_template' => $assigned_bundle_id < 1 && $default_template !== null,
+        ];
+    }
+
+    private function bundle_version_payload(array $bundle, int $page_id = 0, int $post_id = 0): array
     {
         return [
             'bundle_id' => (int) $bundle['lineage_id'],
@@ -1027,6 +1302,7 @@ class API
             'is_current' => (bool) $bundle['is_current'],
             'source_page_id' => (int) $bundle['source_page_id'],
             'page_id' => $page_id,
+            'post_id' => $post_id,
         ];
     }
 

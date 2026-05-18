@@ -31,6 +31,7 @@ class Bundle_Repository
     private const DEPLOYMENT_CURRENT_BUNDLE_ID_META_KEY = '_vibepresto_deployment_current_bundle_id';
     private const DEPLOYMENT_TARGETS_META_KEY = '_vibepresto_deployment_targets';
     private const DEPLOYMENT_HOMEPAGE_ROUTE_META_KEY = '_vibepresto_deployment_homepage_route';
+    private const DEFAULT_SINGLE_POST_TEMPLATE_LINEAGE_OPTION = 'vibepresto_default_single_post_template_lineage_id';
 
     public const PAGE_META_KEY = '_vibepresto_bundle_id';
     public const PAGE_DEPLOYMENT_META_KEY = '_vibepresto_deployment_id';
@@ -238,7 +239,32 @@ class Bundle_Repository
         return (int) get_post_meta($page_id, self::PAGE_META_KEY, true);
     }
 
-    public function promote_version(int $bundle_id, int $page_id = 0)
+    public function get_default_single_post_template_lineage_id(): int
+    {
+        return (int) get_option(self::DEFAULT_SINGLE_POST_TEMPLATE_LINEAGE_OPTION, 0);
+    }
+
+    public function get_default_single_post_template_bundle(): ?array
+    {
+        $lineage_id = $this->get_default_single_post_template_lineage_id();
+        if ($lineage_id < 1) {
+            return null;
+        }
+
+        return $this->get_current_version_for_lineage($lineage_id);
+    }
+
+    public function set_default_single_post_template_lineage_id(int $lineage_id): void
+    {
+        if ($lineage_id > 0) {
+            update_option(self::DEFAULT_SINGLE_POST_TEMPLATE_LINEAGE_OPTION, $this->resolve_lineage_id($lineage_id));
+            return;
+        }
+
+        delete_option(self::DEFAULT_SINGLE_POST_TEMPLATE_LINEAGE_OPTION);
+    }
+
+    public function promote_version(int $bundle_id, int $target_post_id = 0)
     {
         $bundle = $this->find($bundle_id);
         if (! $bundle) {
@@ -247,13 +273,13 @@ class Bundle_Repository
 
         $this->set_current_version((int) $bundle['lineage_id'], $bundle_id);
 
-        if ($page_id > 0) {
-            $page = get_post($page_id);
-            if (! $page instanceof WP_Post || $page->post_type !== 'page') {
-                return new WP_Error('not_found', __('The requested page could not be found.', 'vibepresto'));
+        if ($target_post_id > 0) {
+            $target = get_post($target_post_id);
+            if (! $target instanceof WP_Post || ! in_array($target->post_type, ['page', 'post'], true)) {
+                return new WP_Error('not_found', __('The requested content could not be found.', 'vibepresto'));
             }
 
-            $this->assign_to_page($page_id, $bundle_id);
+            $this->assign_to_page($target_post_id, $bundle_id);
         }
 
         return $this->find($bundle_id);

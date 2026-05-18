@@ -26,6 +26,8 @@ When a page has an assigned VibePresto bundle, visitors see the uploaded bundle 
 - page assignment and mixed-mode deployment mapping
 - homepage assignment
 - posts page assignment
+- single blog post assignment
+- default single-post template assignment
 - front-end takeover rendering
 - WordPress placeholder rendering for page data
 - device-style CLI authorization support
@@ -71,8 +73,9 @@ npx vibepresto deploy --site https://your-site.example --output-dir ./my-app/dis
 - Older versions remain available for inspection and rollback.
 - Multi-page deployments are driven by route manifests and page mappings.
 - The plugin stores and serves static artifacts only. It does not run Node, SSR, or application servers inside WordPress.
-- Placeholder rendering is page-only in v1 and resolves values from the current queried WordPress page object.
+- Placeholder rendering resolves values from the current queried WordPress object used for the takeover request.
 - The configured WordPress posts page can also use a VibePresto bundle and placeholder rendering.
+- Single blog posts can use a directly assigned bundle or fall back to the configured default single-post template lineage.
 
 ## WordPress placeholders
 
@@ -110,6 +113,7 @@ Notes:
 - Missing or unsupported values leave the authored fallback text in place.
 - `post_content` is emitted as plain text, not raw HTML.
 - On a WordPress posts page takeover, `data-vp-source="post"` resolves from the configured posts page object, not each individual post entry.
+- On a single blog post takeover, `data-vp-source="post"` resolves from the current post being viewed.
 
 ## Install on WordPress
 

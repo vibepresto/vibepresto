@@ -61,13 +61,8 @@ class Renderer
             return;
         }
 
-        $bundle_id = $this->bundles->get_assigned_bundle_id((int) $page->ID);
-        if ($bundle_id < 1) {
-            return;
-        }
-
-        $bundle = $this->bundles->find($bundle_id);
-        if (! $bundle) {
+        $bundle = $this->resolve_render_bundle($page);
+        if (! is_array($bundle)) {
             return;
         }
 
@@ -116,6 +111,30 @@ class Renderer
                 $page = get_post($posts_page_id);
                 return $page instanceof \WP_Post ? $page : null;
             }
+        }
+
+        if (is_single()) {
+            $post = get_queried_object();
+            if ($post instanceof \WP_Post && $post->post_type === 'post') {
+                return $post;
+            }
+        }
+
+        return null;
+    }
+
+    private function resolve_render_bundle(\WP_Post $target): ?array
+    {
+        $bundle_id = $this->bundles->get_assigned_bundle_id((int) $target->ID);
+        if ($bundle_id > 0) {
+            $bundle = $this->bundles->find($bundle_id);
+            if ($bundle) {
+                return $bundle;
+            }
+        }
+
+        if ($target->post_type === 'post' && is_single()) {
+            return $this->bundles->get_default_single_post_template_bundle();
         }
 
         return null;
