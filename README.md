@@ -13,6 +13,7 @@ Instead of rebuilding a page inside the WordPress editor, you can:
 - assign that bundle to a single page or a multi-page deployment
 - keep version history for updates and rollback
 - map exported routes from a static frontend build onto WordPress pages
+- render WordPress page data inside uploaded HTML through `data-vp-*` placeholders
 
 When a page has an assigned VibePresto bundle, visitors see the uploaded bundle instead of the normal WordPress theme output for that page.
 
@@ -24,7 +25,9 @@ When a page has an assigned VibePresto bundle, visitors see the uploaded bundle 
 - page creation and lifecycle management
 - page assignment and mixed-mode deployment mapping
 - homepage assignment
+- posts page assignment
 - front-end takeover rendering
+- WordPress placeholder rendering for page data
 - device-style CLI authorization support
 
 ## Recommended workflow
@@ -68,6 +71,45 @@ npx vibepresto deploy --site https://your-site.example --output-dir ./my-app/dis
 - Older versions remain available for inspection and rollback.
 - Multi-page deployments are driven by route manifests and page mappings.
 - The plugin stores and serves static artifacts only. It does not run Node, SSR, or application servers inside WordPress.
+- Placeholder rendering is page-only in v1 and resolves values from the current queried WordPress page object.
+- The configured WordPress posts page can also use a VibePresto bundle and placeholder rendering.
+
+## WordPress placeholders
+
+Uploaded HTML can request WordPress values at render time with:
+
+- `data-vp-source="post"`
+- `data-vp-field="<wp-style-field>"`
+
+Supported fields:
+
+- `post_title`
+- `post_name`
+- `post_excerpt`
+- `post_content`
+- `post_date`
+- `post_modified`
+- `post_author`
+- `permalink`
+- `featured_image_url`
+- `author_display_name`
+
+Example:
+
+```html
+<article>
+  <h1 data-vp-source="post" data-vp-field="post_title">Fallback title</h1>
+  <p data-vp-source="post" data-vp-field="post_excerpt">Fallback excerpt</p>
+  <p data-vp-source="post" data-vp-field="post_date">Fallback date</p>
+</article>
+```
+
+Notes:
+
+- V1 replaces element text content only.
+- Missing or unsupported values leave the authored fallback text in place.
+- `post_content` is emitted as plain text, not raw HTML.
+- On a WordPress posts page takeover, `data-vp-source="post"` resolves from the configured posts page object, not each individual post entry.
 
 ## Install on WordPress
 

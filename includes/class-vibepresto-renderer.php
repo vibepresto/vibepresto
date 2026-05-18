@@ -8,6 +8,36 @@ if (! defined('ABSPATH')) {
 
 class Renderer
 {
+    private const SUPPORTED_PLACEHOLDER_FIELDS = [
+        'post_title',
+        'post_name',
+        'post_excerpt',
+        'post_content',
+        'post_date',
+        'post_modified',
+        'post_author',
+        'permalink',
+        'featured_image_url',
+        'author_display_name',
+    ];
+
+    private const TEXT_UNSUPPORTED_PLACEHOLDER_TAGS = [
+        'area',
+        'base',
+        'br',
+        'col',
+        'embed',
+        'hr',
+        'img',
+        'input',
+        'link',
+        'meta',
+        'param',
+        'source',
+        'track',
+        'wbr',
+    ];
+
     private Bundle_Repository $bundles;
 
     public function __construct(Bundle_Repository $bundles)
@@ -22,11 +52,11 @@ class Renderer
 
     public function maybe_render_takeover(): void
     {
-        if (is_admin() || ! is_page() || is_feed() || is_preview()) {
+        if (is_admin() || is_feed() || is_preview()) {
             return;
         }
 
-        $page = get_queried_object();
+        $page = $this->resolve_render_target();
         if (! $page instanceof \WP_Post || $page->post_status !== 'publish') {
             return;
         }
@@ -55,7 +85,12 @@ class Renderer
             return;
         }
 
-        $html = $this->rewrite_relative_urls($html, $bundle, $entry_html);
+        $document = $this->load_html_document($html);
+        if ($document instanceof \DOMDocument) {
+            $this->rewrite_relative_urls($document, $bundle, $entry_html);
+            $this->replace_wordpress_placeholders($document, $page);
+            $html = $document->saveHTML() ?: $html;
+        }
 
         if ($bundle['mode'] === 'separate') {
             $html = $this->inject_optional_assets($html, $bundle);
@@ -68,13 +103,29 @@ class Renderer
         exit;
     }
 
-    private function rewrite_relative_urls(string $html, array $bundle, string $entry_html): string
+    private function resolve_render_target(): ?\WP_Post
     {
-        if (! class_exists('\DOMDocument')) {
-            return $html;
+        if (is_page()) {
+            $page = get_queried_object();
+            return $page instanceof \WP_Post ? $page : null;
         }
 
-        $base_url = $this->bundle_base_url($bundle, $entry_html);
+        if (is_home()) {
+            $posts_page_id = (int) get_option('page_for_posts');
+            if ($posts_page_id > 0) {
+                $page = get_post($posts_page_id);
+                return $page instanceof \WP_Post ? $page : null;
+            }
+        }
+
+        return null;
+    }
+
+    private function load_html_document(string $html): ?\DOMDocument
+    {
+        if (! class_exists('\DOMDocument')) {
+            return null;
+        }
 
         $internal_errors = libxml_use_internal_errors(true);
         $document = new \DOMDocument();
@@ -83,8 +134,15 @@ class Renderer
         libxml_use_internal_errors($internal_errors);
 
         if (! $loaded) {
-            return $html;
+            return null;
         }
+
+        return $document;
+    }
+
+    private function rewrite_relative_urls(\DOMDocument $document, array $bundle, string $entry_html): void
+    {
+        $base_url = $this->bundle_base_url($bundle, $entry_html);
 
         $attributes = ['href', 'src', 'action', 'poster'];
         $xpath = new \DOMXPath($document);
@@ -101,8 +159,85 @@ class Renderer
                 }
             }
         }
+    }
 
-        return $document->saveHTML() ?: $html;
+    private function replace_wordpress_placeholders(\DOMDocument $document, \WP_Post $post): void
+    {
+        $xpath = new \DOMXPath($document);
+        $nodes = $xpath->query('//*[@data-vp-source or @data-vp-field]');
+        if (! $nodes) {
+            return;
+        }
+
+        foreach ($nodes as $node) {
+            if (! $node instanceof \DOMElement) {
+                continue;
+            }
+
+            if (in_array(strtolower($node->tagName), self::TEXT_UNSUPPORTED_PLACEHOLDER_TAGS, true)) {
+                continue;
+            }
+
+            $source = sanitize_key($node->getAttribute('data-vp-source'));
+            $field = sanitize_key($node->getAttribute('data-vp-field'));
+            if ($source === '' || $field === '') {
+                continue;
+            }
+
+            $value = $this->resolve_placeholder_value($post, $source, $field);
+            if ($value === null || $value === '') {
+                continue;
+            }
+
+            while ($node->firstChild) {
+                $node->removeChild($node->firstChild);
+            }
+
+            $node->appendChild($document->createTextNode($value));
+        }
+    }
+
+    private function resolve_placeholder_value(\WP_Post $post, string $source, string $field): ?string
+    {
+        if ($source !== 'post' || ! in_array($field, self::SUPPORTED_PLACEHOLDER_FIELDS, true)) {
+            return null;
+        }
+
+        switch ($field) {
+            case 'post_title':
+                return (string) $post->post_title;
+
+            case 'post_name':
+                return (string) $post->post_name;
+
+            case 'post_excerpt':
+                return wp_strip_all_tags((string) $post->post_excerpt, true);
+
+            case 'post_content':
+                return wp_strip_all_tags((string) $post->post_content, true);
+
+            case 'post_date':
+                return get_the_date('', $post) ?: null;
+
+            case 'post_modified':
+                return get_the_modified_date('', $post) ?: null;
+
+            case 'post_author':
+                return (string) $post->post_author;
+
+            case 'permalink':
+                return get_permalink($post) ?: null;
+
+            case 'featured_image_url':
+                return get_the_post_thumbnail_url($post, 'full') ?: null;
+
+            case 'author_display_name':
+                $author = get_user_by('id', (int) $post->post_author);
+                return $author ? (string) $author->display_name : null;
+
+            default:
+                return null;
+        }
     }
 
     private function inject_optional_assets(string $html, array $bundle): string

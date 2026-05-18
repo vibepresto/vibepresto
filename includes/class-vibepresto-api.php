@@ -96,6 +96,12 @@ class API
             'permission_callback' => '__return_true',
         ]);
 
+        register_rest_route('vibepresto/v1', '/pages/(?P<id>\d+)/posts-page', [
+            'methods' => 'POST',
+            'callback' => [$this, 'set_page_as_posts_page'],
+            'permission_callback' => '__return_true',
+        ]);
+
         register_rest_route('vibepresto/v1', '/pages/(?P<id>\d+)/bundle-rollback', [
             'methods' => 'POST',
             'callback' => [$this, 'rollback_page_bundle'],
@@ -540,6 +546,32 @@ class API
         return $this->success($this->page_payload($page));
     }
 
+    public function set_page_as_posts_page(WP_REST_Request $request): WP_REST_Response
+    {
+        $auth = $this->require_bearer_auth($request);
+        if (is_wp_error($auth)) {
+            return $this->from_error($auth);
+        }
+
+        if (! current_user_can('manage_options')) {
+            return $this->error('forbidden', __('Only administrators can change the posts page.', 'vibepresto'), 403);
+        }
+
+        $page = $this->page_from_request($request);
+        if (is_wp_error($page)) {
+            return $this->from_error($page, 404);
+        }
+
+        if ($page->post_status !== 'publish') {
+            return $this->error('invalid_request', __('Publish the page before setting it as the posts page.', 'vibepresto'), 400);
+        }
+
+        update_option('show_on_front', 'page');
+        update_option('page_for_posts', (int) $page->ID);
+
+        return $this->success($this->page_payload($page));
+    }
+
     public function rollback_page_bundle(WP_REST_Request $request): WP_REST_Response
     {
         $auth = $this->require_bearer_auth($request);
@@ -939,6 +971,7 @@ class API
     private function page_list_payload(WP_Post $page): array
     {
         $homepage_id = (int) get_option('page_on_front');
+        $posts_page_id = (int) get_option('page_for_posts');
         return [
             'id' => (int) $page->ID,
             'title' => $page->post_title,
@@ -946,6 +979,7 @@ class API
             'status' => $page->post_status,
             'url' => get_permalink($page->ID),
             'is_homepage' => $homepage_id > 0 && $homepage_id === (int) $page->ID,
+            'is_posts_page' => $posts_page_id > 0 && $posts_page_id === (int) $page->ID,
             'assigned_bundle_id' => $this->bundles->get_assigned_bundle_id((int) $page->ID),
             'assigned_deployment_id' => $this->bundles->get_assigned_deployment_id((int) $page->ID),
         ];
@@ -965,6 +999,7 @@ class API
             'page_status' => $page->post_status,
             'page_url' => get_permalink($page_id),
             'is_homepage' => (int) get_option('page_on_front') === $page_id,
+            'is_posts_page' => (int) get_option('page_for_posts') === $page_id,
             'assigned_bundle_id' => $assigned_bundle_id,
             'assigned_bundle_title' => $assigned_bundle['lineage_name'] ?? '',
             'assigned_bundle_version_id' => $assigned_bundle['id'] ?? 0,
