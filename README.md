@@ -31,6 +31,7 @@ When a page has an assigned VibePresto bundle, visitors see the uploaded bundle 
 - front-end takeover rendering
 - WordPress placeholder rendering for page data
 - device-style CLI authorization support
+- plugin-declared compatibility metadata for the CLI and skill
 
 ## Recommended workflow
 
@@ -80,6 +81,8 @@ npx vibepresto deploy --env production --output-dir ./my-app/dist --create-missi
 - Placeholder rendering resolves values from the current queried `WP_Post` object used for the takeover request.
 - The configured `Posts page` can also use a VibePresto bundle and placeholder rendering.
 - Single posts can use a directly assigned bundle or fall back to the configured default single-post template lineage.
+- The plugin exposes public compatibility metadata at `GET /meta` and also includes it in authenticated `GET /auth/me` responses.
+- Compatibility is advisory in v1: the plugin declares minimum supported CLI and skill versions, and callers can warn users without hard-blocking.
 
 ## WordPress placeholders
 

@@ -30,6 +30,12 @@ class API
 
     public function register_routes(): void
     {
+        register_rest_route('vibepresto/v1', '/meta', [
+            'methods' => 'GET',
+            'callback' => [$this, 'meta'],
+            'permission_callback' => '__return_true',
+        ]);
+
         register_rest_route('vibepresto/v1', '/auth/device', [
             'methods' => 'POST',
             'callback' => [$this, 'create_device_authorization'],
@@ -193,6 +199,11 @@ class API
         ]);
     }
 
+    public function meta(WP_REST_Request $request): WP_REST_Response
+    {
+        return $this->success($this->meta_payload());
+    }
+
     public function create_device_authorization(WP_REST_Request $request): WP_REST_Response
     {
         $this->auth->cleanup_expired();
@@ -263,6 +274,8 @@ class API
 
         return $this->success([
             'site_url' => home_url('/'),
+            'plugin' => $this->plugin_payload(),
+            'compatibility' => $this->compatibility_payload(),
             'session_id' => $auth['session_id'],
             'user_id' => $auth['user']->ID,
             'user_display_name' => $auth['user']->display_name,
@@ -1204,6 +1217,43 @@ class API
         }
 
         return $post;
+    }
+
+    private function meta_payload(): array
+    {
+        return [
+            'site_url' => home_url('/'),
+            'plugin' => $this->plugin_payload(),
+            'compatibility' => $this->compatibility_payload(),
+        ];
+    }
+
+    private function plugin_payload(): array
+    {
+        return [
+            'name' => 'vibepresto',
+            'version' => VIBEPRESTO_VERSION,
+        ];
+    }
+
+    private function compatibility_payload(): array
+    {
+        return [
+            'policy' => VIBEPRESTO_COMPATIBILITY_POLICY,
+            'cli' => [
+                'minimum_version' => VIBEPRESTO_MIN_SUPPORTED_CLI_VERSION,
+                'upgrade_commands' => [
+                    'npm' => 'npm i -g vibepresto@' . VIBEPRESTO_MIN_SUPPORTED_CLI_VERSION,
+                    'pnpm' => 'pnpm add -g vibepresto@' . VIBEPRESTO_MIN_SUPPORTED_CLI_VERSION,
+                    'yarn' => 'yarn global add vibepresto@' . VIBEPRESTO_MIN_SUPPORTED_CLI_VERSION,
+                    'bun' => 'bun add -g vibepresto@' . VIBEPRESTO_MIN_SUPPORTED_CLI_VERSION,
+                ],
+            ],
+            'skill' => [
+                'minimum_version' => VIBEPRESTO_MIN_SUPPORTED_SKILL_VERSION,
+                'upgrade_command' => 'npx skills add vibepresto/skill',
+            ],
+        ];
     }
 
     private function page_list_payload(WP_Post $page): array

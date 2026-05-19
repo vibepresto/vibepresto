@@ -118,6 +118,9 @@ class Plugin
             'site' => [
                 'site_url' => home_url('/'),
                 'plugin_version' => VIBEPRESTO_VERSION,
+                'compatibility_policy' => VIBEPRESTO_COMPATIBILITY_POLICY,
+                'minimum_cli_version' => VIBEPRESTO_MIN_SUPPORTED_CLI_VERSION,
+                'minimum_skill_version' => VIBEPRESTO_MIN_SUPPORTED_SKILL_VERSION,
                 'can_manage_options' => current_user_can('manage_options'),
             ],
         ];

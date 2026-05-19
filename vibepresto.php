@@ -18,6 +18,9 @@ if (! defined('ABSPATH')) {
 }
 
 define('VIBEPRESTO_VERSION', '0.1.1');
+define('VIBEPRESTO_COMPATIBILITY_POLICY', 'soft_warn');
+define('VIBEPRESTO_MIN_SUPPORTED_CLI_VERSION', '0.1.3');
+define('VIBEPRESTO_MIN_SUPPORTED_SKILL_VERSION', '0.1.2');
 define('VIBEPRESTO_PLUGIN_FILE', __FILE__);
 define('VIBEPRESTO_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('VIBEPRESTO_PLUGIN_URL', plugin_dir_url(__FILE__));
